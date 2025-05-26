@@ -4,6 +4,10 @@ freq_multiplier_units = {'mhz' : 1000000,
                          'khz' : 1000,
                          'hz'  : 1}
 
+time_multiplier_units = {'ms' : 1000000,
+                         'us' : 1000,
+                         'ns' : 1}
+
 class MermaidParser:
     def __init__(self, file_path):
         self.file_path = file_path
@@ -199,19 +203,43 @@ class Block(MermaidParser):
 
     def chan_on(self, chan_string):
         chan_list = []
+        comment = ""
         for part in self.get_cols(chan_string):
-            if '-' in part:
+            if self.is_comment(part):
+                comment = part[1:]
+            elif '-' in part:
                 start, end = map(int, part.split('-'))
                 chan_list.extend(range(start, end + 1))
             else:
                 chan_list.append(int(part))
-        return list(set(chan_list)) # remove duplicate
+        return list(set(chan_list)), comment # remove duplicate
 
     def split_unit(self, string):
         return re.findall(r'\d+|\D+', string)
 
     def parse_contents(self):
         return self.content.split('\n')
+
+    def is_comment(self, line):
+        if line.strip().startswith("#"):
+            return True
+        else:
+            return False
+
+    def eat_space_between_units(self, l):
+        t = [x in time_multiplier_units for x in l]
+        f = [x in freq_multiplier_units for x in l]
+        for i, x in enumerate(t):
+            if x:
+                l[i-1] += l[i]
+                l.pop(i)
+
+        for i, x in enumerate(f):
+            if x:
+                l[i-1] += l[i]
+                l.pop(i)
+
+        return l
 
 class ControlBlock(Block):
     def __init__(self, block_id, content):
@@ -249,6 +277,7 @@ class ControlBlock(Block):
                 self.set_patgenversion(next_cols)
 
     def set_clock(self, clock_cols):
+        clock_cols = self.eat_space_between_units(clock_cols)
         for i, part in enumerate(clock_cols):
             if i == 0: # Clock value and unit
                 value, unit = self.split_unit(part)
@@ -323,11 +352,93 @@ class TriggerBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "trigger"
-    def success(self, outcome):
-        self.success = outcome
+        self.comment = []
+        self.rate_defined = None
+        self.count_defined = None
+        self.trigger_grammar = ["extinput", "chan", "rate",
+                "count", "success", "failure", "dac"]
 
-    def failure(self, outcome):
-        self.failure = outcome
+    def process_trigger(self):
+        for i, line in enumerate(self.parse_contents()):
+            if self.is_comment(line) and i == 0:
+                self.trigger_name = line[1:]
+                continue
+            elif self.is_comment(line):
+                self.comment.append(line)
+            cols = self.get_cols(line)
+            first_col = cols[0]
+            next_cols = cols[1:]
+            assert first_col in self.trigger_grammar, f"{first_col} doesn't match syntax"
+            if first_col == self.trigger_grammar[0]:
+                self.set_exinput(next_cols)
+            elif first_col == self.trigger_grammar[1]:
+                self.set_chan(next_cols)
+            elif first_col == self.trigger_grammar[2]:
+                self.set_rate(next_cols)
+            elif first_col == self.trigger_grammar[3]:
+                self.set_count(next_cols)
+            elif first_col == self.trigger_grammar[4]:
+                self.set_success(next_cols)
+            elif first_col == self.trigger_grammar[5]:
+                self.set_failure(next_cols)
+            elif first_col == self.trigger_grammar[6]:
+                self.set_dac(next_cols)
+
+    def set_exinput(self, line):
+        part = line[0]
+        assert part in ['e1', 'e2', 'e3', 'e4']
+        self.external_input = int(part[1:])
+
+    def set_chan(self, line):
+        self.chan, comment = self.chan_on(','.join(line))
+        self.comment.append(comment)
+
+    def set_rate(self, line):
+        line = self.eat_space_between_units(line)
+        for i, part in enumerate(line):
+            if i == 0: # Clock value and unit
+                value, unit = self.split_unit(part)
+                assert unit in freq_multiplier_units.keys(), "Undefined frequency units.(Hz,Khz,MHz)"
+                try:
+                    rate = int(value)
+                except ValueError as emsg:
+                    raise Exception("Clock value should be integer, change units if necessary")
+                self.rate = rate * freq_multiplier_units.get(unit) #Hz
+        if self.rate_defined == None and self.count_defined == None:
+            self.rate_defined = True
+        else:
+            raise Exception("Use only RATE or COUNT, not both")
+
+    def set_count(self, line):
+        line = self.eat_space_between_units(line)
+        for i, part in enumerate(line):
+            if i == 0:
+                try:
+                    self.count = int(part)
+                except ValueError as emsg:
+                    raise Exception("Count value should be integer, change units if necessary")
+            elif i == 1:
+                assert part == "in"
+            elif i == 2:
+                value, unit = self.split_unit(part)
+                try:
+                    time_span = int(value)
+                except ValueError as emsg:
+                    raise Exception("Time span should be integer, change units if necessary")
+                assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
+                self.time_span = time_span * time_multiplier_units.get(unit) #ns
+
+        if self.rate_defined == None and self.count_defined == None:
+            self.count_defined = True
+        else:
+            raise Exception("Use only RATE or COUNT, not both")
+
+
+    def set_success(self, outcome):
+        self.success = outcome[0]
+
+    def set_failure(self, outcome):
+        self.failure = outcome[0]
 
     def check_consistent(self, success = None, failure = None):
         if success is not None:
