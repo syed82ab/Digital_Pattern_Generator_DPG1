@@ -1,8 +1,12 @@
 flowchart TD
     %%control block for settings of DPG    
-    control[CLOCK 100MHz
+    control[CLOCK 100MHz direct
     evars 25,1,0,0
-    ivars 10,100,120,0]
+    ivars 10,100,120,0
+    auxout ttl
+    dacconfig static
+    version 32bit
+    ]
 
     %%trigger blocks
     trigger1[ #MOT loading

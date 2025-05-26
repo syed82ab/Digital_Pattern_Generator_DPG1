@@ -1,5 +1,9 @@
 import re
 
+freq_multiplier_units = {'mhz' : 1000000,
+                         'khz' : 1000,
+                         'hz'  : 1}
+
 class MermaidParser:
     def __init__(self, file_path):
         self.file_path = file_path
@@ -183,6 +187,188 @@ class MermaidParser:
     def get_logic(self):
         return self.logic
 
-class ControlBlock(MermaidParser):
-    def __init__(self):
-        pass
+class Block(MermaidParser):
+    def __init__(self, block_id, content):
+        self.block_id = block_id
+        self.content = content
+
+    def get_cols(self, line):
+        delimiter = ",| |\t"
+        line = line.lower()
+        return list(filter(None, re.split(delimiter,line)))
+
+    def chan_on(self, chan_string):
+        chan_list = []
+        for part in self.get_cols(chan_string):
+            if '-' in part:
+                start, end = map(int, part.split('-'))
+                chan_list.extend(range(start, end + 1))
+            else:
+                chan_list.append(int(part))
+        return list(set(chan_list)) # remove duplicate
+
+    def split_unit(self, string):
+        return re.findall(r'\d+|\D+', string)
+
+    def parse_contents(self):
+        return self.content.split('\n')
+
+class ControlBlock(Block):
+    def __init__(self, block_id, content):
+        super().__init__(block_id, content)
+        self.block_type = "control"
+        self.clockselect = {'auto': 0, 'external':1, 'internal':2,'direct':3}
+        self.dacselect = {'static': 0, 'single':1, 'half':2,'full':3}
+        self.control_grammar = ["clock", "evars", "ivars", "auxout",
+                "dacconfig", "version"]
+
+    def process_control(self):
+        for line in self.parse_contents():
+            cols = self.get_cols(line)
+            first_col = cols[0]
+            next_cols = cols[1:]
+            assert first_col in self.control_grammar, f"{first_col} doesn't match syntax"
+            """ # To migrate to python3.10 syntax
+            match first_col:
+                case "clock":
+                    ...
+                case "evars":
+                    ...
+            """
+            if first_col == self.control_grammar[0]:
+                self.set_clock(next_cols)
+            elif first_col == self.control_grammar[1]:
+                self.set_evars(next_cols)
+            elif first_col == self.control_grammar[2]:
+                self.set_ivars(next_cols)
+            elif first_col == self.control_grammar[3]:
+                self.set_auxline_polarity(next_cols)
+            elif first_col == self.control_grammar[4]:
+                self.set_DACconfig(next_cols)
+            elif first_col == self.control_grammar[5]:
+                self.set_patgenversion(next_cols)
+
+    def set_clock(self, clock_cols):
+        for i, part in enumerate(clock_cols):
+            if i == 0: # Clock value and unit
+                value, unit = self.split_unit(part)
+                assert unit in freq_multiplier_units.keys(), "Undefined frequency units.(Hz,Khz,MHz)"
+                try:
+                    clock = int(value)
+                except ValueError as emsg:
+                    raise Exception("Clock value should be integer, change units if necessary")
+                self.clock = clock * freq_multiplier_units.get(unit) #Hz
+                assert self.clock <= 100000000, "Clock frequency too large"
+                self.timestep = int(1e9/self.clock) #ns
+        if i == 1: # Clock select
+            assert part in self.clockselect.keys(), "Undefined clock select"
+            self.clock_select = self.clockselect.get(part)
+        else:
+            self.clock_select = 0 # auto by default
+        if self.clock_select != 3:
+            assert self.clock == 100_000_000, "Clock select and clock freq don't agree"
+
+    def set_evars(self, evars_cols):
+        self.evars = [0, 0, 0, 0] # Default to 0
+        assert len(evars_cols) <= 4, "Too many external vars"
+        for i, val in enumerate(evars_cols):
+            val = int(val)
+            assert val < 65536, "External variable overflow"
+            self.evars[i] = val
+
+    def set_ivars(self, ivars_cols):
+        self.ivars = [0, 0, 0, 0] # Default to 0
+        assert len(ivars_cols) <= 4, "Too many internal vars"
+        for i, val in enumerate(ivars_cols):
+            val = int(val)
+            assert val < 65536, "Internal variable overflow"
+            self.ivars[i] = val
+
+    def set_auxline_polarity(self, aux_cols):
+        self.auxline = None
+        part = aux_cols[0]
+        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout"
+        if part in ['0', 'nim']:
+            self.auxline = 0
+        elif part in ['1', 'ttl']:
+            self.auxline = 1
+        if not self.auxline:
+            self.auxline = 0 # Set to NIM by default
+
+    def set_DACconfig(self, dac_config_cols):
+        self.dacconfig = None
+        part = dac_config_cols[0]
+        assert part in self.dacselect.keys(), f"Undefined DAC config"
+        self.dacconfig = self.dacselect.get(part)
+
+    def set_patgenversion(self, patgen_ver_cols):
+        self.patgen_ver = None
+        part = patgen_ver_cols[0]
+        assert part in ['32bit', '64bit']
+        if part == '32bit':
+            self.legacy = True
+        elif part == '64bit':
+            self.legacy = False
+        else:
+            self.legacy = True
+    pass
+
+class SeqBlock(Block):
+    def __init__(self, block_id, content):
+        super().__init__(block_id, content)
+        self.block_type = "sequence"
+    pass
+
+class TriggerBlock(Block):
+    def __init__(self, block_id, content):
+        super().__init__(block_id, content)
+        self.block_type = "trigger"
+    def success(self, outcome):
+        self.success = outcome
+
+    def failure(self, outcome):
+        self.failure = outcome
+
+    def check_consistent(self, success = None, failure = None):
+        if success is not None:
+            assert success == self.success, "Success logic doesn't match Block"
+        if failure is not None:
+            assert failure == self.failure, "Failure logic doesn't match Block"
+        return
+
+
+class LoopBlock(Block):
+    def __init__(self, block_id, content):
+        super().__init__(block_id, content)
+        self.block_type = "loop"
+    pass
+
+class BranchBlock(Block):
+    def __init__(self, block_id, content):
+        super().__init__(block_id, content)
+        self.block_type = "branch"
+    pass
+
+def label_blocks(key):
+    key = key.lower()
+    if key.startswith("control"):
+        return ControlBlock
+    elif key.startswith("seq"):
+        return SeqBlock
+    elif key.startswith("trigger"):
+        return TriggerBlock
+    elif key.startswith("loop"):
+        return LoopBlock
+    elif key.startswith("branch"):
+        return BranchBlock
+    else:
+        raise NotImplementedError(f"{key} not implemented.")
+
+# Example usage
+if __name__ == "__main__":
+    parser = MermaidParser('v2.txt')
+    parser.parse()
+    blocks = {}
+    for key, value in parser.get_blocks().items():
+        cla = label_blocks(key)
+        blocks[key] = cla(key,value)
