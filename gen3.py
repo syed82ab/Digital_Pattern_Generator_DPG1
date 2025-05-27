@@ -346,6 +346,18 @@ class SeqBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "sequence"
+        self.comment = []
+        self.sequence = []
+
+    def process_sequence(self):
+        for i, line in enumerate(self.parse_contents()):
+            if self.is_comment(line) and i == 0:
+                self.trigger_name  = line[1:]
+                continue
+            elif self.is_comment(line):
+                self.comment.append(line)
+            cols = self.get_cols(line)
+
     pass
 
 class TriggerBlock(Block):
@@ -446,6 +458,9 @@ class TriggerBlock(Block):
         if failure is not None:
             assert failure == self.failure, "Failure logic doesn't match Block"
         return
+
+    def set_dac(self, line):
+        pass
 
 
 class LoopBlock(Block):
