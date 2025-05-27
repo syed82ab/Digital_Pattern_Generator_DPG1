@@ -196,23 +196,43 @@ class Block(MermaidParser):
         self.block_id = block_id
         self.content = content
 
+    def split_comments(self,line):
+        text = line.split("#",1)
+        if len(text)>1:
+            line = text[0]
+            comment = "#" + text[1]
+        else:
+            line = text[0]
+            comment = ""
+        return line, comment
+
     def get_cols(self, line):
+        line, comment = self.split_comments(line)
         delimiter = ",| |\t"
         line = line.lower()
-        return list(filter(None, re.split(delimiter,line)))
+        cols = list(filter(None, re.split(delimiter,line)))
+        if comment:
+            cols.append(comment)
+        return cols
 
     def chan_on(self, chan_string):
         chan_list = []
-        comment = ""
         for part in self.get_cols(chan_string):
-            if self.is_comment(part):
-                comment = part[1:]
-            elif '-' in part:
+            if '-' in part:
                 start, end = map(int, part.split('-'))
                 chan_list.extend(range(start, end + 1))
             else:
                 chan_list.append(int(part))
-        return list(set(chan_list)), comment # remove duplicate
+        return list(set(chan_list)) # remove duplicate
+
+    def dac_update(self, dac_string):
+        dac_list = []
+        dac_value = []
+        for part in self.get_cols(dac_string):
+            ch, val = part.split(":")
+            dac_list.append(int(ch))
+            dac_value.append(float(val))
+        return dict(zip(dac_list, dac_value))
 
     def split_unit(self, string):
         return re.findall(r'\d+|\D+', string)
@@ -343,20 +363,89 @@ class ControlBlock(Block):
     pass
 
 class SeqBlock(Block):
+    """
+    Sequence block holds the sequence of steps to go through in a list of dict.
+    The keys of the dict are time(in ns), chan, use_ivar, [dac], comments.
+    Sequences has not much grammar involved.
+    """
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "sequence"
-        self.comment = []
         self.sequence = []
 
     def process_sequence(self):
         for i, line in enumerate(self.parse_contents()):
-            if self.is_comment(line) and i == 0:
-                self.trigger_name  = line[1:]
+            if i == 0 and self.is_comment(line):
+                self.sequence_name  = line[1:]
                 continue
-            elif self.is_comment(line):
-                self.comment.append(line)
             cols = self.get_cols(line)
+            self.add_seq_from_cols(cols)
+
+    def add_seq_from_cols(self, cols):
+        time, cols = self.get_time(cols)
+        use_ivar, cols = self.get_ivar(cols)
+        chan, comments1, cols = self.get_chan(cols)
+        if cols:
+            dac, comments2, cols = self.get_dac(cols)
+        else:
+            dac = {}
+            comments2 = ""
+        self.sequence.append({'time' : time,
+                              'chan' : chan,
+                              'use_ivar' : use_ivar,
+                              'dac' : dac,
+                              'comments' : comments1 + comments2,
+                              })
+
+    def get_dac(self, cols):
+        assert cols[0].lower() == 'dac', "Keyword missing"
+        line = ','.join(cols[1:])
+        line, comments = self.split_comments(line)
+        cols = []
+        return self.dac_update(line), comments, cols 
+
+    def get_chan(self, cols):
+        assert cols[0].lower() == 'chan', "Keyword missing"
+        try:
+            dac_idx = cols.index('dac')
+            line = ','.join(cols[1:dac_idx])
+            comments = ''
+            cols = cols[dac_idx:]
+        except ValueError:
+            line = ','.join(cols[1:]) # without dac,
+            cols = []
+        line, comments = self.split_comments(line)
+        return self.chan_on(line), comments, cols
+
+
+    def get_time(self, cols):
+        try:
+            value, unit = self.split_unit(cols[0])
+            cols.pop(0)
+        except ValueError:
+            value = cols[0]
+            unit = cols[1]
+            cols.pop(0)
+            cols.pop(0)
+        finally:
+            assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
+            time = int(value) * time_multiplier_units.get(unit) #ns
+        return time , cols
+
+    def get_ivar(self, cols):
+        '''
+            Get the internal variable index used for looping to increase time.
+            ivar goes from 0--3
+        '''
+        try:
+            index = cols.index('use_ivar')
+            ivar = int(cols[index+1])
+            cols.pop(index)
+            cols.pop(index)
+        except ValueError:
+            ivar = None
+        assert ivar in [0, 1, 2, 3]
+        return ivar, cols
 
     pass
 
@@ -375,11 +464,11 @@ class TriggerBlock(Block):
             if self.is_comment(line) and i == 0:
                 self.trigger_name = line[1:]
                 continue
-            elif self.is_comment(line):
-                self.comment.append(line)
             cols = self.get_cols(line)
             first_col = cols[0]
             next_cols = cols[1:]
+            if self.is_comment(next_cols[-1]):
+                self.comment.append(next_cols[-1])
             assert first_col in self.trigger_grammar, f"{first_col} doesn't match syntax"
             if first_col == self.trigger_grammar[0]:
                 self.set_exinput(next_cols)
@@ -397,13 +486,16 @@ class TriggerBlock(Block):
                 self.set_dac(next_cols)
 
     def set_exinput(self, line):
+        '''
+            Get the external input channel used. Must be e1,e2,e3 or e4.
+            Returns 1,2,3 or 4.
+        '''
         part = line[0]
         assert part in ['e1', 'e2', 'e3', 'e4']
         self.external_input = int(part[1:])
 
     def set_chan(self, line):
-        self.chan, comment = self.chan_on(','.join(line))
-        self.comment.append(comment)
+        self.chan = self.chan_on(','.join(line))
 
     def set_rate(self, line):
         line = self.eat_space_between_units(line)
@@ -467,6 +559,39 @@ class LoopBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "loop"
+        self.logic = []
+        self.loop_logic = [] # List of list similar to parser.logic
+
+    def process_loop(self):
+        for i, line in enumerate(self.parse_contents()):
+            if i == 0 and self.is_comment(line):
+                self.loop_name  = line[1:]
+                continue
+            if i == 1:
+                self.counter_var, self.counter_val = self.get_ivar(line)
+            else:
+                self.add_logic_from_line(line)
+
+    def add_logic_from_line(self, line):
+        print(line)
+        self.match_logic(line)
+        if len(self.logic)>0:
+            a, b, c = self.logic.pop()
+            self.loop_logic.append([blocks[a],blocks[b],c])
+
+    def get_ivar(self, line):
+        '''
+            Get the internal variable index used for looping.
+            ivar goes from 0--3
+        '''
+        cols = self.get_cols(line)
+        assert cols[0].lower() == 'ivar', "Wrong keyword"
+        ivar = int(cols[1])
+        assert ivar in [0, 1, 2, 3], "Counter index must be 0,1,2 or 3"
+        val = int(cols[2])
+        assert (val > 0 and val < 65536), "Counter value out of bounds"
+        return ivar, val
+
     pass
 
 class BranchBlock(Block):

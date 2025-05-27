@@ -36,7 +36,7 @@ flowchart TD
 
     %%sequential blocks
     seq1[ # pump
-    5ms use_loop chan 0, 1, 12, 13 #comment
+    5 ms use_ivar 2 chan 0, 1, 12, 13, dac, 0:2, 2:2,3:9 #comment what this line is for
     2ms chan 1, 13, 16-19
     ]
     seq2[ # something
@@ -55,12 +55,12 @@ flowchart TD
     250ns chan 6, 13 16-19
     ]
     seq4[
-    21.93us chan 13, 16-19, 24 #microwave
+    21930ns chan 13, 16-19, 24 #microwave
     10ns chan 13, 16-19
     100us chan 5, 13, 16-19
     ]
     seq5[
-    1.966080ms chan 13
+    1966080ns chan 13
     ]
 
     seq6[
@@ -76,8 +76,10 @@ flowchart TD
     ]
 
     %%loop blocks
-    subgraph loop1 [loop i1, 120]
-        seq2-->seq3
+    subgraph loop1 [  #name comments
+    ivar 3, 120
+    ]
+        seq2-->seq3  #some comments
         seq3-->trigger2
         trigger2-->|failure|seq2
     end
