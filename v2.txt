@@ -1,11 +1,15 @@
 flowchart TD
     %%control block for settings of DPG    
-    control[CLOCK 100MHz direct
+    control[CLOCK 100MHz auto
     evars 25,1,0,0
     ivars 10,100,120,0
-    auxout ttl
-    dacconfig static
-    version 32bit
+    auxout nim
+    auxconfig normal
+    dacconfig single
+    inlevel nim
+    version 128bit
+    dacstatic, 0:10000,1:300
+    startaddress 0
     ]
 
     %%trigger blocks

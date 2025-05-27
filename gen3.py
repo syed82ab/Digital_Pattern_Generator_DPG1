@@ -265,10 +265,25 @@ class ControlBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "control"
+        self.auxconfig = 0
+        self.start_address = 0 # Default to 0
+        self.ivars = [0, 0, 0, 0] # Default to 0
+        self.evars = [0, 0, 0, 0] # Default to 0
+        self.auxline_pol = 0 # Set to NIM by default
+        self.clock_select = 0 # auto by default
+        self.level = 0 # Set to NIM by default
+        self.dacconfig = 0 # Set to static by default
+        self.patgen_128bit = False # Set to 64bit version by default
+        self.dacs = [0,0,0,0,0,0,0,0]
+        self.inthreshold = 59000 # Nim by default
+
+
+        self.auxselect = {'normal': 0, 'delayed':1, 'main':2,'ref':3}
         self.clockselect = {'auto': 0, 'external':1, 'internal':2,'direct':3}
         self.dacselect = {'static': 0, 'single':1, 'half':2,'full':3}
         self.control_grammar = ["clock", "evars", "ivars", "auxout",
-                "dacconfig", "version"]
+                "dacconfig", "version", "inlevel", "auxconfig",
+                "startaddress", "dacstatic"]
 
     def process_control(self):
         for line in self.parse_contents():
@@ -295,6 +310,14 @@ class ControlBlock(Block):
                 self.set_DACconfig(next_cols)
             elif first_col == self.control_grammar[5]:
                 self.set_patgenversion(next_cols)
+            elif first_col == self.control_grammar[6]:
+                self.set_external_input_polarity(next_cols)
+            elif first_col == self.control_grammar[7]:
+                self.set_auxconfig(next_cols)
+            elif first_col == self.control_grammar[8]:
+                self.set_startaddress(next_cols)
+            elif first_col == self.control_grammar[9]:
+                self.set_staticDAC(next_cols)
 
     def set_clock(self, clock_cols):
         clock_cols = self.eat_space_between_units(clock_cols)
@@ -318,7 +341,6 @@ class ControlBlock(Block):
             assert self.clock == 100_000_000, "Clock select and clock freq don't agree"
 
     def set_evars(self, evars_cols):
-        self.evars = [0, 0, 0, 0] # Default to 0
         assert len(evars_cols) <= 4, "Too many external vars"
         for i, val in enumerate(evars_cols):
             val = int(val)
@@ -326,41 +348,61 @@ class ControlBlock(Block):
             self.evars[i] = val
 
     def set_ivars(self, ivars_cols):
-        self.ivars = [0, 0, 0, 0] # Default to 0
         assert len(ivars_cols) <= 4, "Too many internal vars"
         for i, val in enumerate(ivars_cols):
             val = int(val)
             assert val < 65536, "Internal variable overflow"
             self.ivars[i] = val
 
+    def set_auxconfig(self, aux_cols):
+        part = aux_cols[0]
+        assert part in self.auxselect.keys(), "Undefined auxline select"
+        self.auxconfig = self.auxselect.get(part)
+
+    def set_startaddress(self, aux_cols):
+        part = int(aux_cols[0])
+        assert part < 512, "Undefined auxline select"
+        self.start_address = part
+
+
     def set_auxline_polarity(self, aux_cols):
-        self.auxline = None
         part = aux_cols[0]
         assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout"
         if part in ['0', 'nim']:
-            self.auxline = 0
+            self.auxline_pol = 0
         elif part in ['1', 'ttl']:
-            self.auxline = 1
-        if not self.auxline:
-            self.auxline = 0 # Set to NIM by default
+            self.auxline_pol = 1
+
+    def set_external_input_polarity(self, aux_cols):
+        part = aux_cols[0]
+        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout"
+        if part in ['0', 'nim']:
+            self.level = 0
+        elif part in ['1', 'ttl']:
+            self.level = 1
+
 
     def set_DACconfig(self, dac_config_cols):
-        self.dacconfig = None
         part = dac_config_cols[0]
         assert part in self.dacselect.keys(), f"Undefined DAC config"
         self.dacconfig = self.dacselect.get(part)
 
+    def set_staticDAC(self, dac_vals):
+        line = ','.join(dac_vals)
+        dac_dict = self.dac_update(line)
+        for dac_chan, val in dac_dict.items():
+            self.dacs[dac_chan] = val
+
     def set_patgenversion(self, patgen_ver_cols):
-        self.patgen_ver = None
         part = patgen_ver_cols[0]
-        assert part in ['32bit', '64bit']
-        if part == '32bit':
-            self.legacy = True
+        assert part in ['128bit', '64bit']
+        if part == '128bit':
+            self.patgen_128bit = True
         elif part == '64bit':
-            self.legacy = False
-        else:
-            self.legacy = True
-    pass
+            self.patgen_128bit = False
+
+    def process(self):
+        self.process_control()
 
 class SeqBlock(Block):
     """
@@ -373,7 +415,7 @@ class SeqBlock(Block):
         self.block_type = "sequence"
         self.sequence = []
 
-    def process_sequence(self):
+    def process_seq(self):
         for i, line in enumerate(self.parse_contents()):
             if i == 0 and self.is_comment(line):
                 self.sequence_name  = line[1:]
@@ -444,10 +486,11 @@ class SeqBlock(Block):
             cols.pop(index)
         except ValueError:
             ivar = None
-        assert ivar in [0, 1, 2, 3]
+        assert ivar in [None, 0, 1, 2, 3]
         return ivar, cols
 
-    pass
+    def process(self):
+        self.process_seq()
 
 class TriggerBlock(Block):
     def __init__(self, block_id, content):
@@ -554,6 +597,8 @@ class TriggerBlock(Block):
     def set_dac(self, line):
         pass
 
+    def process(self):
+        self.process_trigger()
 
 class LoopBlock(Block):
     def __init__(self, block_id, content):
@@ -573,11 +618,9 @@ class LoopBlock(Block):
                 self.add_logic_from_line(line)
 
     def add_logic_from_line(self, line):
-        print(line)
         self.match_logic(line)
         if len(self.logic)>0:
-            a, b, c = self.logic.pop()
-            self.loop_logic.append([blocks[a],blocks[b],c])
+            self.loop_logic.append(self.logic.pop())
 
     def get_ivar(self, line):
         '''
@@ -592,7 +635,8 @@ class LoopBlock(Block):
         assert (val > 0 and val < 65536), "Counter value out of bounds"
         return ivar, val
 
-    pass
+    def process(self):
+        self.process_loop()
 
 class BranchBlock(Block):
     def __init__(self, block_id, content):
@@ -615,11 +659,38 @@ def label_blocks(key):
     else:
         raise NotImplementedError(f"{key} not implemented.")
 
+class Translator:
+    def __init__(self, blocks, logic):
+        self.blocks = {}
+        self.logic = logic
+        self.config_bits = 0
+        self.param_register = []
+        for key, value in blocks.items():
+            cla = label_blocks(key)
+            self.blocks[key] = cla(key,value)
+            self.blocks[key].process()
+
+    def process_config(self):
+        b = self.blocks['control']
+        if b.patgen_128bit:
+            self.config_bits += b.dacconfig<<11 #bits 12:11
+            self.config_bits += b.auxline_pol<<10 # bit 10
+            self.param_register = [b.start_address, b.inthreshold,
+                                  *b.evars, *b.ivars, *b.dacs]
+        else:
+            self.param_register = [b.start_address, *b.evars, *b.ivars]
+        self.config_bits += b.clock_select<<6 # bit 7:6
+        self.config_bits += b.auxconfig<<4 # bit 5:4
+        self.config_bits += b.level<<1 # bit 1
+    def process_logic(self):
+        for block_start, block_end, condition in self.logic:
+            start = self.blocks[block_start]
+            end = self.blocks[block_end]
+
 # Example usage
 if __name__ == "__main__":
     parser = MermaidParser('v2.txt')
     parser.parse()
-    blocks = {}
-    for key, value in parser.get_blocks().items():
-        cla = label_blocks(key)
-        blocks[key] = cla(key,value)
+    out = Translator(parser.get_blocks(), parser.get_logic())
+#        cla = label_blocks(key)
+#        blocks[key] = cla(key,value)
