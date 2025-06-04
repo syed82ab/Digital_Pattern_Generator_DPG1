@@ -2,12 +2,12 @@ flowchart TD
     %%control block for settings of DPG    
     control[CLOCK 100MHz auto
     evars 25,1,0,0
-    ivars 10,100,120,0
+    ivars 10,100,12,0
     auxout nim
     auxconfig normal
     dacconfig single
     inlevel nim
-    version 128bit
+    version 64bit
     dacstatic, 0:10000,1:300
     startaddress 0
     ]
@@ -17,7 +17,7 @@ flowchart TD
     extinput, e1
     chan 0,1,13,15
     %%rate 5000Hz
-    count 25 in 25 ms
+    count 25 in 5 ms
     success seq1
     failure trigger1
     ]
@@ -27,20 +27,20 @@ flowchart TD
     %%rate 3MHz
     count 1 in 330ns
     success seq4
-    failure    seq2
+    failure loop_check
     ]
     trigger3[ #Check
     extinput e1,
     chan 1 2 3
     %%rate 10kHz
-    count 25 in 25 ms
-    success seq7
-    failure seq6
+    count 25 in 5 ms
+    success seq6
+    failure seq7
     ]
 
     %%sequential blocks
-    seq1[ # pump
-    5 ms use_ivar 2 chan 0, 1, 12, 13, dac, 0:2, 2:2,3:9 #comment what this line is for
+    seq1[ # pumpO
+    5 ms use_ivar 1 chan 0, 1, 12, 13, dac, 0:2, 2:2,3:9 #comment what this line is for
     2ms chan 1, 13, 16-19
     ]
     seq2[ # something
@@ -81,11 +81,11 @@ flowchart TD
 
     %%loop blocks
     subgraph loop1 [  #name comments
-    ivar 3, 120
+    ivar 3, 120 chan 0, 1, 8, 13
     ]
-        seq2-->seq3  #some comments
+        seq2-->seq3 
         seq3-->trigger2
-        trigger2-->|failure|seq2
+        trigger2-->|failure|loop_check
     end
 
     %%branching blocks, not used here
@@ -93,13 +93,12 @@ flowchart TD
     %% Actual flow starts here
     trigger1-->|success| seq1
     trigger1-->|failure| trigger1
-    seq1-->seq2
-    seq2-->loop1
-    trigger2-->|success|seq4
-    seq4-->seq5 
-    loop1-->|loop ends|seq5
+    seq1-->loop1
+    loop1-->|end| seq5
+    trigger2-->|success| seq4
+    seq4-->seq5
     seq5-->trigger3
     trigger3-->|success| seq6
     trigger3-->|failure| seq7
-    seq7-->trigger1
     seq6-->seq1
+    seq7-->trigger1

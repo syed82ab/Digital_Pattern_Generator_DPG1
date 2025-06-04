@@ -1,4 +1,8 @@
+import configargparse
 import re
+import warnings
+
+from math import ceil
 
 freq_multiplier_units = {'mhz' : 1000000,
                          'khz' : 1000,
@@ -160,7 +164,6 @@ class MermaidParser:
             else:
                 self.logic.append((logic_match.group(1), logic_match.group(2)))
 
-
     def ignore_comments(self, line):
         """
             Parses line and remove comments, empty line or flowchart keyword
@@ -195,6 +198,9 @@ class Block(MermaidParser):
     def __init__(self, block_id, content):
         self.block_id = block_id
         self.content = content
+        self.first_row = None
+        self.last_row = None
+        self.written = False
 
     def split_comments(self,line):
         text = line.split("#",1)
@@ -260,6 +266,26 @@ class Block(MermaidParser):
                 l.pop(i)
 
         return l
+
+    def get_dac(self, cols):
+        assert cols[0].lower() == 'dac', "Keyword missing"
+        line = ','.join(cols[1:])
+        line, comments = self.split_comments(line)
+        cols = []
+        return self.dac_update(line), comments, cols 
+
+    def get_chan(self, cols):
+        assert cols[0].lower() == 'chan', "Keyword missing"
+        try:
+            dac_idx = cols.index('dac')
+            line = ','.join(cols[1:dac_idx])
+            comments = ''
+            cols = cols[dac_idx:]
+        except ValueError:
+            line = ','.join(cols[1:]) # without dac,
+            cols = []
+        line, comments = self.split_comments(line)
+        return self.chan_on(line), comments, cols
 
 class ControlBlock(Block):
     def __init__(self, block_id, content):
@@ -413,6 +439,8 @@ class SeqBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "sequence"
+        self.last_step_is_loop = False
+        self.sequence_name = ""
         self.sequence = []
 
     def process_seq(self):
@@ -438,27 +466,6 @@ class SeqBlock(Block):
                               'dac' : dac,
                               'comments' : comments1 + comments2,
                               })
-
-    def get_dac(self, cols):
-        assert cols[0].lower() == 'dac', "Keyword missing"
-        line = ','.join(cols[1:])
-        line, comments = self.split_comments(line)
-        cols = []
-        return self.dac_update(line), comments, cols 
-
-    def get_chan(self, cols):
-        assert cols[0].lower() == 'chan', "Keyword missing"
-        try:
-            dac_idx = cols.index('dac')
-            line = ','.join(cols[1:dac_idx])
-            comments = ''
-            cols = cols[dac_idx:]
-        except ValueError:
-            line = ','.join(cols[1:]) # without dac,
-            cols = []
-        line, comments = self.split_comments(line)
-        return self.chan_on(line), comments, cols
-
 
     def get_time(self, cols):
         try:
@@ -613,7 +620,19 @@ class LoopBlock(Block):
                 self.loop_name  = line[1:]
                 continue
             if i == 1:
-                self.counter_var, self.counter_val = self.get_ivar(line)
+                cols = self.get_cols(line)
+                self.counter_var, self.counter_val,cols = self.get_ivar(cols)
+                chan, comments1, cols = self.get_chan(cols)
+                if cols:
+                    dac, comments2, cols = self.get_dac(cols)
+                else:
+                    dac = {}
+                    comments2 = ""
+                self.loop_set={'chan' : chan,
+                              'use_ivar' : self.counter_var,
+                              'dac' : dac,
+                              'comments' : comments1 + comments2,
+                              }
             else:
                 self.add_logic_from_line(line)
 
@@ -622,18 +641,26 @@ class LoopBlock(Block):
         if len(self.logic)>0:
             self.loop_logic.append(self.logic.pop())
 
-    def get_ivar(self, line):
+    def get_ivar(self, cols):
         '''
             Get the internal variable index used for looping.
             ivar goes from 0--3
         '''
-        cols = self.get_cols(line)
         assert cols[0].lower() == 'ivar', "Wrong keyword"
         ivar = int(cols[1])
         assert ivar in [0, 1, 2, 3], "Counter index must be 0,1,2 or 3"
         val = int(cols[2])
         assert (val > 0 and val < 65536), "Counter value out of bounds"
-        return ivar, val
+        try:
+            chan_idx = cols.index('chan')
+            line = ','.join(cols[1:chan_idx])
+            comments = ''
+            cols = cols[chan_idx:]
+        except ValueError:
+            line = ','.join(cols[1:]) # without chan,
+            cols = []
+        line, comments = self.split_comments(line)
+        return ivar, val, cols
 
     def process(self):
         self.process_loop()
@@ -660,37 +687,681 @@ def label_blocks(key):
         raise NotImplementedError(f"{key} not implemented.")
 
 class Translator:
-    def __init__(self, blocks, logic):
+    def __init__(self, blocks, logic, filein, fileout, hex=True):
         self.blocks = {}
+        self.hex = hex
         self.logic = logic
         self.config_bits = 0
         self.param_register = []
+        self.new_dpatt_str = ""
+        self.dpatt_str = f"#This file was generated by gen3.py using {filein}\n\n"
+        self.fileout = fileout
         for key, value in blocks.items():
             cla = label_blocks(key)
             self.blocks[key] = cla(key,value)
             self.blocks[key].process()
 
+        PARAMETERWRITE = 8; ADDRESSRESET=4; TABLERESET=1;
+        self.process_config()
+        self.write_config(PARAMETERWRITE+ADDRESSRESET+TABLERESET)
+        self.write_param()
+        self.preprocess_blocks()
+        self.process_logic()
+        self.write_out()
+
+    def write_out(self):
+        with open(self.fileout, 'w') as f:
+            f.write(self.dpatt_str)
+            f.write(self.new_dpatt_str)
+
+    def preprocess_blocks(self):
+        # Go through blocks and determine rows needed
+        for block in self.blocks.values():
+            if block.block_type == 'control':
+                continue
+            else:
+                self.determine_num_rows(block)
+        # Go through logic and deterimne start address and end address of each
+        # block
+        first = True
+        count = 0
+        for block, block_end, condition in self.logic:
+            block = self.blocks[block]
+            if first:
+                block.first_row = 0
+                count = block.first_row + block.num_rows
+                block.last_row = count - 1
+                first = False
+                continue
+            if block.first_row == None: # Need this since 0 is treated as False
+                block.first_row = count
+                count = block.first_row + block.num_rows
+                block.last_row = count - 1
+            if block.last_row == None:
+                count = block.first_row + block.num_rows
+                block.last_row = count - 1
+            block_end = self.blocks[block_end]
+            if block_end.first_row == None:
+                block_end.first_row = count
+                if block_end.block_type == 'loop':
+                    count += 2 # 2 for loop load var and decrement counter
+                    for block_loop, block_loop_end, condition_loop in \
+                    block_end.loop_logic: # assume no nested loop
+                        #print(block_loop, block_loop_end, condition_loop, count)
+                        block_loop = self.blocks[block_loop]
+                        if block_loop.first_row == None:
+                            block_loop.first_row = count
+                            count = block_loop.first_row + block_loop.num_rows
+                            block_loop.last_row = count - 1
+                        if block_loop.last_row == None:
+                            count = block_loop.first_row + block_loop.num_rows
+                            block_loop.last_row = count - 1
+                        #print(block_loop.block_id, block_loop_end, condition_loop, count)
+                if block_end.block_type == 'loop':
+                    count += 2 # 2 for check and zero conndition address
+                    block_end.last_row = count - 1
+                else:
+                    count += block_end.num_rows
+                    block_end.last_row = count - 1
+
+    def determine_num_rows(self, block):
+        if block.block_type == 'sequence':
+            self.preprocess_seq(block)
+        elif block.block_type == 'trigger':
+            self.preprocess_trigger(block)
+        elif block.block_type == 'loop':
+            self.preprocess_loop(block)
+        elif block.block_type == 'branch':
+            self.preprocess_branch(block)
+        else:
+            assert "Unknown block type"
+
+    def preprocess_branch(self, block):
+        '''
+            Reserve 2 rows for internal loops.
+            1) Check input line or hook with address
+            2) Unset condition address
+        '''
+        block.num_rows = 2
+
+    def preprocess_trigger(self, block):
+        '''
+            Reserve maximum 5 rows for external trigger.
+            If ivar ( < 65us time_span) not needed steps 2 and 3 can be squashed
+            1) Load evar (and ivar if needed)
+            2) Decrement ivar counter
+            3) Check non-zero ivar with address
+            4) Check non-zero evar with address
+            5) evar zero address condition
+        '''
+        block.num_rows = 5
+
+    def preprocess_loop(self, block):
+        '''
+            Reserve 4 rows for internal loops.
+            1) Load ivar
+            2) Decrement ivar counter
+            3) Check non-zero with address
+            4) ivar zero address condition
+        '''
+        block.num_rows = 4
+
+    def preprocess_seq(self, block):
+        rows = 0
+        seq_len = len(block.sequence)-1
+        for j, step in enumerate(block.sequence):
+            time = step['time']
+            i = step['use_ivar']
+            ivar = self.ivars[i] if i else None
+            if ivar:
+                rows += 1 # For load
+                if time/self.maxtimestep/ivar/2 <= 1:
+                    rows += 2 # For decrement and check
+                else: # Happens at >85.8 s with max ivar(65535)
+                    rows += 2 + \
+                    ceil(time/self.maxtimestep/ivar)# Additional line gives 43s
+                if j == seq_len:
+                    rows += 1 # Add one more line if loop is last of sequence
+                    block.last_step_is_loop = True
+            elif ceil(time/self.maxtimestep)<1:
+                rows += 1 # For single step
+            else:
+                additional_rows = ceil(time/self.maxtimestep)
+                if additional_rows >4:
+                    warnings.warn(f"This time step uses {additional_rows} " + \
+                            "rows of the pattern. Consider using ivar")
+                rows += additional_rows # For steps without loops.
+        block.num_rows = rows
+
+    def process_logic(self):
+        self.new_dpatt_str += "\nholdaddr; ramprog;\n"
+        self.pattern_row = 0
+        for block_start, block_end, condition in self.logic:
+            start = self.blocks[block_start]
+            end = self.blocks[block_end]
+            if start.written:
+                continue
+            if start.block_type == 'trigger':
+                #print(f"start {start.block_id}, end {end.block_id}, condition" +
+                #f" {condition}")
+                self.process_trigger_logic(start, end, condition)
+            if start.block_type == 'sequence':
+                self.process_seq_logic(start, end)
+            if start.block_type == 'loop':
+                self.process_loop_logic(start, end)
+
+    def process_loop_logic(self, loop_block, loop_end):
+        count = 0
+        self.new_dpatt_str += "\n#" + loop_block.block_id + "  " + \
+                              loop_block.loop_name + "\n"
+
+        ivar_chan = loop_block.counter_var
+        dig_chan = loop_block.loop_set['chan']
+        load_timestep = self.timestep
+        timestep = self.timestep
+        comment  =loop_block.loop_set['comments']
+
+        special_load = (1<<12) + ((2**ivar_chan)<<4)
+        special_dec = (1<<12) + ((2**ivar_chan)<<8)
+        special_icheck = ((12 + ivar_chan)<<12)
+        icheck_row = loop_block.last_row - 1
+        ivar = loop_block.counter_val
+
+        self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(load_timestep) + \
+                self.address_write(
+                        address = None,
+                        special = special_load,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment= \
+                    f"Load internal counter {ivar_chan} " + \
+                    comment
+                    ) + \
+                '\n'
+        repeat_icheck_address = self.pattern_row
+        self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(timestep) + \
+                self.address_write(
+                        address = None,
+                        special = special_dec,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment=comment) + \
+                '\n'
+        count += 2
+        for block_start, block_end, condition in loop_block.loop_logic:
+            start = self.blocks[block_start]
+            if block_end == 'loop_check':
+                end.block_id = 'loop_check'
+                end.loop_check_row = icheck_row
+            else:
+                end = self.blocks[block_end]
+            if start.written:
+                continue
+            if start.block_type == 'trigger':
+                #print(f"start {start.block_id}, end {end.block_id}, condition" +
+                #f" {condition}")
+                self.process_trigger_logic(start, end, condition)
+            if start.block_type == 'sequence':
+                self.process_seq_logic(start, end)
+
+        self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(timestep) + \
+                self.address_write(
+                        address = repeat_icheck_address,
+                        special = special_icheck,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment=comment) + \
+                '\n'
+        address = loop_end.first_row
+        self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(timestep) + \
+                self.address_write(
+                        address = address,
+                        special = None,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment=comment) + \
+                '\n'
+        count += 2
+        print("loop", count, loop_block.num_rows)
+
+        pass
+    def process_seq_logic(self, start, end):
+        count = 0
+        seq_len = len(start.sequence) - 1
+        self.new_dpatt_str += "\n#" + start.block_id + "  " + \
+                              start.sequence_name + "\n"
+        for j, step in enumerate(start.sequence):
+            time = step['time']
+            ivar_chan = step['use_ivar']
+            dig_chan = step['chan']
+            comment = step['comments']
+            ivar = self.ivars[ivar_chan] if ivar_chan else None
+            if ivar:
+                if start.last_step_is_loop and j == seq_len:
+                    time -= time - self.timestep # reserve 1 timestep to point
+                                                 # to next address if last loop
+                                                 # in sequence block
+                special_load = (1<<12) + ((2**ivar_chan)<<4)
+                special_dec = (1<<12) + ((2**ivar_chan)<<8)
+                special_icheck = ((12 + ivar_chan)<<12)
+                if time/self.maxtimestep/ivar/2 <= 1:
+                    time_loop, load_timestep= self.timebalancer(time, ivar, 2)
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(load_timestep) + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_load,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment= \
+                                f"Load internal counter {ivar_chan} " + \
+                                comment
+                                              ) + \
+                            '\n'
+                    repeat_icheck_address = self.pattern_row
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_loop) + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_dec,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_loop) + \
+                            self.address_write(
+                                    address = repeat_icheck_address,
+                                    special = special_icheck,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+                    count += 3 # For load, decrement and check
+                else: # Happens at >84.8 s with max ivar(65535)
+                    lines = ceil(time/self.maxtimestep/ivar)
+                    time_loop, load_timestep= self.timebalancer(time, ivar,
+                            lines)
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(load_timestep) + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_load,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment= \
+                                f"Load internal counter {ivar_chan} " + \
+                                comment
+                                              ) + \
+                            '\n'
+                    repeat_icheck_address = self.pattern_row
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_loop) + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_dec,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+
+                    for ii in range(lines-2): # minus decrement and check
+                        self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_loop) + \
+                            self.address_write(
+                                    address = None,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_loop) + \
+                            self.address_write(
+                                    address = repeat_icheck_address,
+                                    special = special_icheck,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+                    count += 1 + \
+                        ceil(time/self.maxtimestep/ivar)
+                if start.last_step_is_loop and j == seq_len: # if last loop
+                    self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(out.timestep) + \
+                            self.address_write(
+                                    address = end.first_row,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+                    count += 1
+            elif ceil(time/self.maxtimestep)<1:
+                address = end.first_row if j == seq_len else None
+                self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time) + \
+                            self.address_write(
+                                    address = address,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment=comment) + \
+                            '\n'
+                count += 1
+            else:
+                additional_rows = ceil(time/self.maxtimestep)
+                if additional_rows >4:
+                    warnings.warn(f"This time step uses {additional_rows} " + \
+                            "rows of the pattern. Consider using ivar")
+                time_left = time
+                while time_left > 0:
+                    if time_left > self.maxtimestep:
+                        address = None
+                        time_to_write = self.maxtimestep
+                        time_left -= time_to_write
+                    else:
+                        address = end.first_row if j == seq_len else None
+                        time_to_write = time_left
+                        time_left -= time_to_write
+                    self.new_dpatt_str += 'writew ' + \
+                        self.dig_chan_write(dig_chan) + \
+                        self.time_write(int(time_to_write)) + \
+                        self.address_write(
+                                address = address,
+                                special = None,
+                                cond = None,
+                                ) + \
+                        self.row_num_write(comment=comment) + \
+                        '\n'
+                    count += 1
+        print("sequence", count, start.num_rows)
+
+    def timebalancer(self, time, i, looplines = 2):
+        timestep = self.timestep
+        load_timestep = timestep
+        while ((time - load_timestep)/i/timestep%looplines):
+            load_timestep += timestep
+        time_loop = int((time - load_timestep)/i//looplines)
+        return time_loop, load_timestep
+
+
+    def process_trigger_logic(self, start, end, condition):
+        ivar_needed = False
+        ivar_chan = None
+        #Check consistency of blocks and logic and
+        # Define success and failure row address.
+
+        if condition[1:-1] == 'success':
+            test_success = end.block_id
+            test_failure = start.failure
+        elif condition[1:-1] == 'failure':
+            test_failure = end.block_id
+            test_success = start.success
+        start.check_consistent(success = test_success, failure = test_failure)
+        if test_success == 'loop_check':
+            success_row = end.loop_check_row
+        else:
+            success_row = self.blocks[test_success].first_row
+        if test_failure == 'loop_check':
+            failure_row = end.loop_check_row
+        else:
+            failure_row = self.blocks[test_failure].first_row
+
+        #Determine if ivar is needed based. We set a max of r15 lines
+        if start.time_span/self.maxtimestep > 1:
+            ivar_needed = True
+            ivar_chan, rows = self.find_good_ivar(start.time_span, 2 )
+        self.new_dpatt_str += "\n#" + start.block_id + "  " + \
+                              start.trigger_name +  "\n"
+        #Start writing the word
+        self.trigger_write(time_span = start.time_span,
+                ivar_needed = ivar_needed,
+                ivar_chan = ivar_chan,
+                evar_chan = start.external_input-1,
+                dig_chan = start.chan,
+                failure_row = failure_row,
+                success_row = success_row,
+                num_rows = start.num_rows)
+        start.written = True
+
+    def trigger_write(self, time_span, ivar_needed, ivar_chan, evar_chan,
+            dig_chan, failure_row, success_row, num_rows):
+        count = 0
+        if ivar_needed:
+            special_load = (1<<12) + ((2**ivar_chan)<<4) + (2**evar_chan)
+            special_dec = (1<<12) + ((2**ivar_chan)<<8)
+            special_icheck = ((12 + ivar_chan)<<12)
+            time_span_loop = time_span//self.ivars[ivar_chan]
+        else:
+            special_load = (1<<12) + (2**evar_chan)
+            special_dec = None
+        special_echeck = ((8 + evar_chan)<<12)
+        special_echeck_address_failure = failure_row
+        special_echeck_address_success = success_row
+
+        # load evar
+        self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            '0,' + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_load,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write(comment='#load vars') + \
+                            '\n'
+        count += 1
+        # Time elapse via loop or single ( min 2 just to keep same num of rows)
+        if ivar_needed:
+            repeat_icheck_address = self.pattern_row
+            self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_span_loop//2) + \
+                            self.address_write(
+                                    address = None,
+                                    special = special_dec,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+
+            self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_span_loop//2) + \
+                            self.address_write(
+                                    address = repeat_icheck_address,
+                                    special = special_icheck,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+            count += 2
+        else:
+            self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            self.time_write(time_span-self.timestep) + \
+                            self.address_write(
+                                    address = None,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+            self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            '0,' + \
+                            self.address_write(
+                                    address = None,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+            count += 2
+
+        # Check evar
+        self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            '0,' + \
+                            self.address_write(
+                                    address = special_echeck_address_failure,
+                                    special = special_echeck,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+        self.new_dpatt_str += 'writew ' + \
+                            self.dig_chan_write(dig_chan) + \
+                            '0,' + \
+                            self.address_write(
+                                    address = special_echeck_address_success,
+                                    special = None,
+                                    cond = None,
+                                    ) + \
+                            self.row_num_write() + \
+                            '\n'
+        count += 2
+        print("trigger", count, num_rows)
+
+    def time_write(self, time):
+        return self.w16(num=(time//self.timestep)-1, hex=False)
+
+    def address_write(self, address = None, special = None, cond = None):
+        if cond is None:
+            if special is None:
+                if address is None:
+                    return self.w16(self.pattern_row+1) # write the next pattern
+                else:
+                    return self.w16(address) # write the given address
+            elif (special>>12) == 1:
+                return self.w16(special) # write the special load/dec command
+            else:
+                return self.w16(special + address)
+        else:
+            raise NotImplementedError(f"Conditional not implemented yet.")
+            pass
+
+    def row_num_write(self, comment = None):
+        row_str = f'\t# row {self.pattern_row}'
+        if comment is not None:
+            row_str += f' #{comment}'
+        self.pattern_row += 1
+        return row_str
+
+    def find_good_ivar(self, span, max_lines):
+        min_rows = 512
+        for i, val in enumerate(self.ivars):
+            rows = span/self.maxtimestep/(val+1)
+            if rows < min_rows:
+                min_rows = rows
+                good_ivar = i
+            if rows < 2:
+                break
+        if min_rows < max_lines:
+            return good_ivar, min_rows
+        else:
+            warnings.warn(f"No good ivar value to use < {max_lines} rows. " +
+                    f"Using ivar chan {good_ivar} with {min_rows} rows.")
+            return good_ivar, min_rows
+
+    def dig_chan_write(self,chan):
+        def sum_chan_bits(chan=chan, first=0, last=15):
+            return sum([2**i if i>=first and i<=last else 0 for i in chan])
+        out0 = sum_chan_bits(first = 0, last = 15)
+        out1 = sum_chan_bits(first = 16, last = 31) >> 16
+        if self.patgen_128bit:
+            out2 = sum_chan_bits(first = 32, last = 47) >> 32
+            out3 = sum_chan_bits(first = 48, last = 63) >> 48
+            return self.w16(out0)+self.w16(out1)+self.w16(out2)+self.w16(out3)
+        return self.w16(out0)+self.w16(out1)
+
     def process_config(self):
         b = self.blocks['control']
+        self.timestep = b.timestep
+        self.maxtimestep = self.timestep*65536
         if b.patgen_128bit:
+            self.patgen_128bit = True
             self.config_bits += b.dacconfig<<11 #bits 12:11
             self.config_bits += b.auxline_pol<<10 # bit 10
             self.param_register = [b.start_address, b.inthreshold,
                                   *b.evars, *b.ivars, *b.dacs]
         else:
+            self.patgen_128bit = False
             self.param_register = [b.start_address, *b.evars, *b.ivars]
         self.config_bits += b.clock_select<<6 # bit 7:6
         self.config_bits += b.auxconfig<<4 # bit 5:4
         self.config_bits += b.level<<1 # bit 1
-    def process_logic(self):
-        for block_start, block_end, condition in self.logic:
-            start = self.blocks[block_start]
-            end = self.blocks[block_end]
+        self.ivars = b.ivars
+        self.evars = b.evars
+
+    def write_config(self, other_config = 0):
+        '''
+        Other config bits that are not set via Control block
+        bits 9:8 controlling table hooks
+        bit 3 controlling RAM of writew Pattern or Params
+        bit 2 controlling address reset during direct/conditional jumps
+        bit 0 controlling tablereset
+        '''
+        config_bits = self.config_bits + other_config
+        self.dpatt_str += "config " + self.w16(config_bits, last=True) + "\n"
+
+    def write_param(self):
+        self.dpatt_str += "writew "
+        end = len(self.param_register)-1
+        for i, val in enumerate(self.param_register):
+            if i == end:
+                self.dpatt_str += self.w16(val,last=True, hex=False)
+            else:
+                self.dpatt_str += self.w16(val, hex=False)
+
+    def w16(self, num, last = False, hex = None):
+        if hex is None:
+            hex = self.hex
+        assert num < 65536 and num >-1
+        term = ";" if last else ","
+        if hex:
+            return f"{num:#06x}" + term
+        else:
+            return str(num) + term
 
 # Example usage
 if __name__ == "__main__":
-    parser = MermaidParser('v2.txt')
-    parser.parse()
-    out = Translator(parser.get_blocks(), parser.get_logic())
-#        cla = label_blocks(key)
-#        blocks[key] = cla(key,value)
+    parser = configargparse.ArgumentParser(
+            description="Loading of new Pattern Generator"
+    )
+    parser.add_argument(
+            "--infile", "-i", default="example1.txt",
+            help="Input file in correct syntax")
+    parser.add_argument(
+            "--outfile", "-o", default="example1.dpatt",
+            help="Output file for DPG")
+    parser.add_argument(
+            "--hex", "-H", action="count", default=0,
+            help="Write ")
+    args = parser.parse_args()
+    filename = args.infile
+    fileout = args.outfile
+    hex = True if args.hex>0 else False
+    p = MermaidParser(filename)
+    p.parse()
+    out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex)
+    
