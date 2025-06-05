@@ -287,6 +287,16 @@ class Block(MermaidParser):
         line, comments = self.split_comments(line)
         return self.chan_on(line), comments, cols
 
+    def set_exinput(self, line):
+        '''
+            Get the external input channel used. Must be e1,e2,e3 or e4.
+            Returns 1,2,3 or 4.
+        '''
+        part = line[0]
+        assert part in ['e1', 'e2', 'e3', 'e4']
+        self.external_input = int(part[1:])
+
+
 class ControlBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
@@ -504,6 +514,8 @@ class TriggerBlock(Block):
         super().__init__(block_id, content)
         self.block_type = "trigger"
         self.comment = []
+        self.chan = []
+        self.dac = []
         self.rate_defined = None
         self.count_defined = None
         self.trigger_grammar = ["extinput", "chan", "rate",
@@ -534,15 +546,6 @@ class TriggerBlock(Block):
                 self.set_failure(next_cols)
             elif first_col == self.trigger_grammar[6]:
                 self.set_dac(next_cols)
-
-    def set_exinput(self, line):
-        '''
-            Get the external input channel used. Must be e1,e2,e3 or e4.
-            Returns 1,2,3 or 4.
-        '''
-        part = line[0]
-        assert part in ['e1', 'e2', 'e3', 'e4']
-        self.external_input = int(part[1:])
 
     def set_chan(self, line):
         self.chan = self.chan_on(','.join(line))
@@ -669,6 +672,65 @@ class BranchBlock(Block):
     def __init__(self, block_id, content):
         super().__init__(block_id, content)
         self.block_type = "branch"
+        self.chan = []
+        self.dac = []
+        self.branch_grammar = ["extinput", "high", "low", "chan", "dac"]
+    def process_branch(self):
+        for i, line in enumerate(self.parse_contents()):
+            if self.is_comment(line) and i == 0:
+                self.branch_name = line[1:]
+                continue
+            cols = self.get_cols(line)
+            if len(cols)>1:
+                first_col = cols[0]
+                next_cols = cols[1:]
+                if self.is_comment(next_cols[-1]):
+                    self.comment.append(next_cols[-1])
+                assert first_col in self.branch_grammar, f"{first_col} doesn't match syntax"
+                if first_col == self.branch_grammar[0]:
+                    self.set_exinput(next_cols)
+                elif first_col == self.branch_grammar[1]:
+                    self.set_high(next_cols)
+                elif first_col == self.branch_grammar[2]:
+                    self.set_low(next_cols)
+                elif first_col == self.branch_grammar[3]:
+                    self.get_chan(next_cols)
+                elif first_col == self.branch_grammar[4]:
+                    self.get_dac(next_cols)
+                else:
+                    self.get_time(cols)
+            else:
+                self.get_time(cols)
+        pass
+    def get_time(self, cols):
+        try:
+            value, unit = self.split_unit(cols[0])
+            cols.pop(0)
+        except ValueError:
+            value = cols[0]
+            unit = cols[1]
+            cols.pop(0)
+            cols.pop(0)
+        finally:
+            assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
+            time = int(value) * time_multiplier_units.get(unit) #ns
+        self.timestep = time
+
+    def set_high(self, outcome):
+        self.high = outcome[0]
+
+    def set_low(self, outcome):
+        self.low = outcome[0]
+
+    def check_consistent(self, high = None, low = None):
+        if high is not None:
+            assert high == self.high, "High logic doesn't match Block"
+        if low is not None:
+            assert low == self.low, "Low logic doesn't match Block"
+        return
+
+    def process(self):
+        self.process_branch()
     pass
 
 def label_blocks(key):
@@ -778,11 +840,19 @@ class Translator:
 
     def preprocess_branch(self, block):
         '''
-            Reserve 2 rows for internal loops.
-            1) Check input line or hook with address
-            2) Unset condition address
+            Branching can either use 1 or 2 rows.
+            It depends on the block of the "low" branch.
+            1) Check condition with high address
+            (2) Low address if not the next row 
         '''
-        block.num_rows = 2
+        low = block.low
+        name = block.block_id
+        for i, l in enumerate(self.logic):
+            if l[0] == name and self.logic[i+1][0] == low:
+                block.num_rows = 1
+                break
+            else:
+                block.num_rows = 2
 
     def preprocess_trigger(self, block):
         '''
@@ -849,6 +919,43 @@ class Translator:
                 self.process_seq_logic(start, end)
             if start.block_type == 'loop':
                 self.process_loop_logic(start, end)
+            if start.block_type == 'branch':
+                self.process_branch_logic(start, end, condition)
+
+    def process_branch_logic(self, branch_block, end, condition):
+        count = 0
+        ext_chan = branch_block.external_input
+        dig_chan = branch_block.chan
+        timestep = branch_block.timestep
+        comment = ''
+        special_bcheck_address_high = self.blocks[branch_block.high].first_row
+        special_bcheck_address_low = self.blocks[branch_block.low].first_row
+        special_bcheck = ((ext_chan+3)<<12)
+        self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(timestep) + \
+                self.address_write(
+                        address = special_bcheck_address_high,
+                        special = special_bcheck,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment=comment) + \
+                '\n'
+        count +=1
+        if branch_block.num_rows == 2:
+            self.new_dpatt_str += 'writew ' + \
+                self.dig_chan_write(dig_chan) + \
+                self.time_write(timestep) + \
+                self.address_write(
+                        address = special_bcheck_address_low,
+                        special = None,
+                        cond = None,
+                        ) + \
+                self.row_num_write(comment=comment) + \
+                '\n'
+            count +=1
+        branch_block.written = True
+        #print("branch", count, num_rows)
 
     def process_loop_logic(self, loop_block, loop_end):
         count = 0
@@ -930,9 +1037,8 @@ class Translator:
                 self.row_num_write(comment=comment) + \
                 '\n'
         count += 2
-        print("loop", count, loop_block.num_rows)
+        #print("loop", count, loop_block.num_rows)
 
-        pass
     def process_seq_logic(self, start, end):
         count = 0
         seq_len = len(start.sequence) - 1
@@ -1093,7 +1199,7 @@ class Translator:
                         self.row_num_write(comment=comment) + \
                         '\n'
                     count += 1
-        print("sequence", count, start.num_rows)
+        #print("sequence", count, start.num_rows)
 
     def timebalancer(self, time, i, looplines = 2):
         timestep = self.timestep
@@ -1240,7 +1346,7 @@ class Translator:
                             self.row_num_write() + \
                             '\n'
         count += 2
-        print("trigger", count, num_rows)
+        #print("trigger", count, num_rows)
 
     def time_write(self, time):
         return self.w16(num=(time//self.timestep)-1, hex=False)
@@ -1249,13 +1355,13 @@ class Translator:
         if cond is None:
             if special is None:
                 if address is None:
-                    return self.w16(self.pattern_row+1) # write the next pattern
+                    return self.w16(self.pattern_row+1, last=True) # write the next pattern
                 else:
-                    return self.w16(address) # write the given address
+                    return self.w16(address, last=True) # write the given address
             elif (special>>12) == 1:
-                return self.w16(special) # write the special load/dec command
+                return self.w16(special, last=True) # write the special load/dec command
             else:
-                return self.w16(special + address)
+                return self.w16(special + address, last=True)
         else:
             raise NotImplementedError(f"Conditional not implemented yet.")
             pass
@@ -1360,8 +1466,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     filename = args.infile
     fileout = args.outfile
-    hex = True if args.hex>0 else False
+    hex_mode = True if args.hex>0 else False
     p = MermaidParser(filename)
     p.parse()
-    out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex)
+    out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex_mode)
     
