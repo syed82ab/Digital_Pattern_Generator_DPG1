@@ -775,6 +775,7 @@ class Translator:
         with open(self.fileout, 'w') as f:
             f.write(self.dpatt_str)
             f.write(self.new_dpatt_str)
+            f.write("\n\nrun; #Run sequence")
 
     def preprocess_blocks(self):
         # Go through blocks and determine rows needed
@@ -1052,7 +1053,7 @@ class Translator:
             ivar = self.ivars[ivar_chan] if ivar_chan else None
             if ivar:
                 if start.last_step_is_loop and j == seq_len:
-                    time -= time - self.timestep # reserve 1 timestep to point
+                    time = time - self.timestep # reserve 1 timestep to point
                                                  # to next address if last loop
                                                  # in sequence block
                 special_load = (1<<12) + ((2**ivar_chan)<<4)
@@ -1060,6 +1061,7 @@ class Translator:
                 special_icheck = ((12 + ivar_chan)<<12)
                 if time/self.maxtimestep/ivar/2 <= 1:
                     time_loop, load_timestep= self.timebalancer(time, ivar, 2)
+                    #print(time,ivar,time_loop,load_timestep)
                     self.new_dpatt_str += 'writew ' + \
                             self.dig_chan_write(dig_chan) + \
                             self.time_write(load_timestep) + \
@@ -1151,7 +1153,7 @@ class Translator:
                 if start.last_step_is_loop and j == seq_len: # if last loop
                     self.new_dpatt_str += 'writew ' + \
                             self.dig_chan_write(dig_chan) + \
-                            self.time_write(out.timestep) + \
+                            self.time_write(self.timestep) + \
                             self.address_write(
                                     address = end.first_row,
                                     special = None,

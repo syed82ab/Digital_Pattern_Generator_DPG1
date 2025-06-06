@@ -1,4 +1,4 @@
-%% This is an example script one.  %% Are comments for Mermaid and # are
+%% This is an example script.  %% Are comments for Mermaid and # are
 %% comments for the gen3.py parser, if will come up in the final flowchart
 
 %% Example 1, simple repetitive sequence
@@ -8,8 +8,7 @@ flowchart TD
     %%Settings accepted are {CLOCK}, {evars}, {ivars}, {auxout}, {auxconfig}
     %% {dacconfig}, {inlevel}, {version}, {dacstatic}, {startaddress}, {inthresh}
     control[CLOCK 100MHz auto
-    evars 25,1,0,0
-    ivars 10,100,12,0
+    ivars 10,2,0,0
     auxout nim
     auxconfig normal
     dacconfig single
@@ -19,40 +18,21 @@ flowchart TD
     startaddress 0
     ]
 
-    %%trigger blocks
+    %%trigger blocks, not used here
 
     %%sequential blocks
-    seq1[ #1MHz on
-    100ns chan 0, 24
+    seq1 [#delay
+    2ms use_ivar 1 chan 2
     ]
-    seq2[ #5MHz on
-    500ns chan 0, 24
-    ]
-    seq3[ #5MHz bal off
-    400ns chan
-    ]
-
     %%loop blocks
+    subgraph loop1 [  #burst
+    ivar 3, 120 chan 0
+    ]
+    end
+
 
     %%branching blocks, not used here
-    branch1[
-    extinput e1
-    100ns
-    high seq1
-    low seq2
-    ]
-    branch2[
-    extinput e1
-    100ns
-    high seq1
-    low seq3
-    ]
 
     %% Actual flow starts here
-    seq1-->branch1
-    branch1-->|low|seq2
-    branch1-->|high|seq1
-    seq2-->branch2
-    branch2-->|low|seq3
-    branch2-->|high|seq1
-    seq3-->seq2
+    loop1-->seq1
+    seq1-->loop1

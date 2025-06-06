@@ -39,11 +39,11 @@ flowchart TD
     ]
 
     %%sequential blocks
-    seq1[ # pumpO
+    seq1[ #pumpO
     5 ms use_ivar 1 chan 0, 1, 12, 13, dac, 0:2, 2:2,3:9 #comment what this line is for
     2ms chan 1, 13, 16-19
     ]
-    seq2[ # something
+    seq2[ #something
     120us chan 1, 13, 16-19
     150us chan 2, 10, 13, 16-19
     2us chan 1, 13, 16-19
