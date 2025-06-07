@@ -4,15 +4,43 @@ import warnings
 
 from math import ceil
 
-freq_multiplier_units = {'mhz' : 1000000,
-                         'khz' : 1000,
-                         'hz'  : 1}
+# === UnitConverter ===
+class UnitConverter:
+    """Centralized utilities for frequency and time unit conversions."""
+    freq_units = {'mhz': 1_000_000, 'khz': 1_000, 'hz': 1}
+    time_units = {'ms': 1_000_000, 'us': 1_000, 'ns': 1}
 
-time_multiplier_units = {'ms' : 1000000,
-                         'us' : 1000,
-                         'ns' : 1}
+    @staticmethod
+    def freq(value, unit):
+        """Convert frequency with unit (e.g. 10, 'kHz') to Hz."""
+        unit = unit.lower()
+        if unit not in UnitConverter.freq_units:
+            raise ValueError(f"Unknown frequency unit: {unit}")
+        return int(value) * UnitConverter.freq_units[unit]
+
+    @staticmethod
+    def time(value, unit):
+        """Convert time with unit (e.g. 5, 'us') to ns."""
+        unit = unit.lower()
+        if unit not in UnitConverter.time_units:
+            raise ValueError(f"Unknown time unit: {unit}")
+        return int(value) * UnitConverter.time_units[unit]
+
+    @staticmethod
+    def parse_value_unit(s: str):
+        """Split '10ms' into ('10','ms'), or raise ValueError."""
+        match = re.match(r"(\d+)([a-zA-Z]+)", s.strip())
+        if match:
+            return match.groups()
+        raise ValueError(f"Cannot parse value and unit from '{s}'")
 
 class MermaidParser:
+    BLOCK_PATTERN_SINGLE = re.compile(r'^(\w+)\s*\[(.+)\]$')
+    BLOCK_PATTERN_BEGIN = re.compile(r'^(\w+)\s*\[(.*)$')
+    LOOP_PATTERN_SINGLE = re.compile(r'^subgraph\s*(\w+)\s*\[(.+)\]$')
+    LOOP_PATTERN_BEGIN = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
+    LOGIC_PATTERN = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
+
     def __init__(self, file_path):
         self.file_path = file_path
         self.blocks = {}
@@ -193,6 +221,24 @@ class MermaidParser:
 
     def get_logic(self):
         return self.logic
+
+class BlockFactory:
+    """
+    Factory to create block objects based on block name/id.
+    Register block classes using BlockFactory.register().
+    """
+    _registry = {}
+
+    @classmethod
+    def register(cls, prefix, block_cls):
+        cls._registry[prefix.lower()] = block_cls
+
+    @classmethod
+    def create(cls, block_id, content):
+        for prefix, block_cls in cls._registry.items():
+            if block_id.lower().startswith(prefix):
+                return block_cls(block_id, content)
+        raise NotImplementedError(f"{block_id} not implemented.")
 
 class Block(MermaidParser):
     def __init__(self, block_id, content):
