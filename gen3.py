@@ -299,8 +299,8 @@ class Block(MermaidParser):
             return False
 
     def eat_space_between_units(self, l):
-        t = [x in time_multiplier_units for x in l]
-        f = [x in freq_multiplier_units for x in l]
+        t = [x in UnitConverter.time_units for x in l]
+        f = [x in UnitConverter.freq_units for x in l]
         for i, x in enumerate(t):
             if x:
                 l[i-1] += l[i]
@@ -405,14 +405,9 @@ class ControlBlock(Block):
         clock_cols = self.eat_space_between_units(clock_cols)
         for i, part in enumerate(clock_cols):
             if i == 0: # Clock value and unit
-                value, unit = self.split_unit(part)
-                assert unit in freq_multiplier_units.keys(), "Undefined frequency units.(Hz,Khz,MHz)"
-                try:
-                    clock = int(value)
-                except ValueError as emsg:
-                    raise Exception("Clock value should be integer, change units if necessary")
-                self.clock = clock * freq_multiplier_units.get(unit) #Hz
-                assert self.clock <= 100000000, "Clock frequency too large"
+                value, unit = UnitConverter.parse_value_unit(part)
+                self.clock = UnitConverter.freq(value, unit)
+                assert self.clock <= 100_000_000, "Clock frequency too large"
                 self.timestep = int(1e9/self.clock) #ns
         if i == 1: # Clock select
             assert part in self.clockselect.keys(), "Undefined clock select"
@@ -525,7 +520,7 @@ class SeqBlock(Block):
 
     def get_time(self, cols):
         try:
-            value, unit = self.split_unit(cols[0])
+            value, unit = UnitConverter.parse_value_unit(cols[0])
             cols.pop(0)
         except ValueError:
             value = cols[0]
@@ -533,9 +528,8 @@ class SeqBlock(Block):
             cols.pop(0)
             cols.pop(0)
         finally:
-            assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
-            time = int(value) * time_multiplier_units.get(unit) #ns
-        return time , cols
+            time = UnitConverter.time(value, unit)
+        return time, cols
 
     def get_ivar(self, cols):
         '''
@@ -600,13 +594,8 @@ class TriggerBlock(Block):
         line = self.eat_space_between_units(line)
         for i, part in enumerate(line):
             if i == 0: # Clock value and unit
-                value, unit = self.split_unit(part)
-                assert unit in freq_multiplier_units.keys(), "Undefined frequency units.(Hz,Khz,MHz)"
-                try:
-                    rate = int(value)
-                except ValueError as emsg:
-                    raise Exception("Clock value should be integer, change units if necessary")
-                self.rate = rate * freq_multiplier_units.get(unit) #Hz
+                value, unit = UnitConverter.parse_value_unit(part)
+                self.rate = UnitConverter.freq(value, unit)
         if self.rate_defined == None and self.count_defined == None:
             self.rate_defined = True
         else:
@@ -623,13 +612,8 @@ class TriggerBlock(Block):
             elif i == 1:
                 assert part == "in"
             elif i == 2:
-                value, unit = self.split_unit(part)
-                try:
-                    time_span = int(value)
-                except ValueError as emsg:
-                    raise Exception("Time span should be integer, change units if necessary")
-                assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
-                self.time_span = time_span * time_multiplier_units.get(unit) #ns
+                value, unit = UnitConverter.parse_value_unit(part)
+                self.time_span = UnitConverter.time(value, unit)
 
         if self.rate_defined == None and self.count_defined == None:
             self.count_defined = True
@@ -750,7 +734,7 @@ class BranchBlock(Block):
         pass
     def get_time(self, cols):
         try:
-            value, unit = self.split_unit(cols[0])
+            value, unit = UnitConverter.parse_value_unit(cols[0])
             cols.pop(0)
         except ValueError:
             value = cols[0]
@@ -758,9 +742,7 @@ class BranchBlock(Block):
             cols.pop(0)
             cols.pop(0)
         finally:
-            assert unit in time_multiplier_units.keys(), "Undefined time units. ns, us, ms)"
-            time = int(value) * time_multiplier_units.get(unit) #ns
-        self.timestep = time
+            self.timestep = UnitConverter.time(value, unit)
 
     def set_high(self, outcome):
         self.high = outcome[0]
