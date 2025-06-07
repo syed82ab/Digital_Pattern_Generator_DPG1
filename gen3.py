@@ -34,13 +34,13 @@ class UnitConverter:
             return match.groups()
         raise ValueError(f"Cannot parse value and unit from '{s}'")
 
-class MermaidParser:
-    BLOCK_PATTERN_SINGLE = re.compile(r'^(\w+)\s*\[(.+)\]$')
-    BLOCK_PATTERN_BEGIN = re.compile(r'^(\w+)\s*\[(.*)$')
-    LOOP_PATTERN_SINGLE = re.compile(r'^subgraph\s*(\w+)\s*\[(.+)\]$')
-    LOOP_PATTERN_BEGIN = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
-    LOGIC_PATTERN = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
+BLOCK_PATTERN_SINGLE = re.compile(r'^(\w+)\s*\[(.+)\]$')
+BLOCK_PATTERN_BEGIN = re.compile(r'^(\w+)\s*\[(.*)$')
+LOOP_PATTERN_SINGLE = re.compile(r'^subgraph\s*(\w+)\s*\[(.+)\]$')
+LOOP_PATTERN_BEGIN = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
+LOGIC_PATTERN = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
 
+class MermaidParser:
     def __init__(self, file_path):
         self.file_path = file_path
         self.blocks = {}
@@ -174,7 +174,8 @@ class MermaidParser:
             key1 --> key2
             key1 --> |key3| key2
         """
-        if LOGIC_PATTERN.match(line):
+        logic_match = LOGIC_PATTERN.match(line)
+        if logic_match:
             if logic_match.lastindex == 3: # Has 3 information
                 self.logic.append((logic_match.group(1),
                     logic_match.group(3),logic_match.group(2)))
@@ -765,8 +766,7 @@ class Translator:
         for key, value in blocks.items():
             block = BlockFactory.create(key, value)
             self.blocks[key] = block
-            block.process()for key, value in blocks.items():
-        
+            block.process()
         PARAMETERWRITE = 8; ADDRESSRESET=4; TABLERESET=1;
         self.process_config()
         self.write_config(PARAMETERWRITE+ADDRESSRESET+TABLERESET)
