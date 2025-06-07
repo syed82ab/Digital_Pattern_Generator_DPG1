@@ -312,7 +312,7 @@ class MermaidParser:
         """
         return self.logic
 
-class Block:
+class Block(MermaidParser):
     def __init__(self, block_id, content):
         self.block_id = block_id
         self.content = content
@@ -1031,28 +1031,26 @@ class Translator:
         special_bcheck_address_high = self.blocks[branch_block.high].first_row
         special_bcheck_address_low = self.blocks[branch_block.low].first_row
         special_bcheck = ((ext_chan+3)<<12)
-        self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(timestep) + \
-                self.address_write(
-                        address = special_bcheck_address_high,
-                        special = special_bcheck,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment=comment) + \
-                '\n'
+        self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=timestep,
+                address={'address' : special_bcheck_address_high,
+                         'special' : special_bcheck,
+                         'cond'    : None,
+                         },
+                comment=comment,
+                )
         count +=1
         if branch_block.num_rows == 2:
-            self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(timestep) + \
-                self.address_write(
-                        address = special_bcheck_address_low,
-                        special = None,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment=comment) + \
-                '\n'
+            self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=timestep,
+                address={'address' : special_bcheck_address_low,
+                         'special' : None,
+                         'cond'    : None,
+                         },
+                comment=comment,
+                )
             count +=1
         branch_block.written = True
         #print("branch", count, num_rows)
@@ -1074,30 +1072,25 @@ class Translator:
         icheck_row = loop_block.last_row - 1
         ivar = loop_block.counter_val
 
-        self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(load_timestep) + \
-                self.address_write(
-                        address = None,
-                        special = special_load,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment= \
-                    f"Load internal counter {ivar_chan} " + \
-                    comment
-                    ) + \
-                '\n'
+        self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=load_timestep,
+                address={'address' : None,
+                         'special' : special_load,
+                         'cond'    : None,
+                         },
+                comment= f"Load internal counter {ivar_chan} " + comment,
+                )
         repeat_icheck_address = self.pattern_row
-        self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(timestep) + \
-                self.address_write(
-                        address = None,
-                        special = special_dec,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment=comment) + \
-                '\n'
+        self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=timestep,
+                address={'address' : None,
+                         'special' : special_dec,
+                         'cond'    : None,
+                         },
+                comment=comment,
+                )
         count += 2
         for block_start, block_end, condition in loop_block.loop_logic:
             start = self.blocks[block_start]
@@ -1115,27 +1108,25 @@ class Translator:
             if start.block_type == 'sequence':
                 self.process_seq_logic(start, end)
 
-        self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(timestep) + \
-                self.address_write(
-                        address = repeat_icheck_address,
-                        special = special_icheck,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment=comment) + \
-                '\n'
+        self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=timestep,
+                address={'address' : repeat_icheck_address,
+                         'special' : special_icheck,
+                         'cond'    : None,
+                         },
+                comment=comment,
+                )
         address = loop_end.first_row
-        self.new_dpatt_str += 'writew ' + \
-                self.dig_chan_write(dig_chan) + \
-                self.time_write(timestep) + \
-                self.address_write(
-                        address = address,
-                        special = None,
-                        cond = None,
-                        ) + \
-                self.row_num_write(comment=comment) + \
-                '\n'
+        self.new_dpatt_str += self.writew_line(
+                dig_chan=dig_chan,
+                time=timestep,
+                address={'address' : address,
+                         'special' : None,
+                         'cond'    : None,
+                         },
+                comment=comment,
+                )
         count += 2
         #print("loop", count, loop_block.num_rows)
 
@@ -1161,118 +1152,102 @@ class Translator:
                 if time/self.maxtimestep/ivar/2 <= 1:
                     time_loop, load_timestep= self.timebalancer(time, ivar, 2)
                     #print(time,ivar,time_loop,load_timestep)
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(load_timestep) + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_load,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment= \
-                                f"Load internal counter {ivar_chan} " + \
-                                comment
-                                              ) + \
-                            '\n'
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=load_timestep,
+                        address={'address' : None,
+                                 'special' : special_load,
+                                 'cond'    : None,
+                                },
+                        comment=f"Load internal counter {ivar_chan} " + comment,
+                        )
                     repeat_icheck_address = self.pattern_row
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_loop) + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_dec,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
-
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_loop) + \
-                            self.address_write(
-                                    address = repeat_icheck_address,
-                                    special = special_icheck,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=time_loop,
+                        address={'address' : None,
+                                 'special' : special_dec,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=time_loop,
+                        address={'address' : repeat_icheck_address,
+                                 'special' : special_icheck,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
                     count += 3 # For load, decrement and check
                 else: # Happens at >84.8 s with max ivar(65535)
                     lines = ceil(time/self.maxtimestep/ivar)
                     time_loop, load_timestep= self.timebalancer(time, ivar,
                             lines)
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(load_timestep) + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_load,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment= \
-                                f"Load internal counter {ivar_chan} " + \
-                                comment
-                                              ) + \
-                            '\n'
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=load_timestep,
+                        address={'address' : None,
+                                 'special' : special_load,
+                                 'cond'    : None,
+                                },
+                        comment=f"Load internal counter {ivar_chan} " + comment,
+                        )
                     repeat_icheck_address = self.pattern_row
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_loop) + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_dec,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
-
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=time_loop,
+                        address={'address' : None,
+                                 'special' : special_dec,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
+                    count += 2
                     for ii in range(lines-2): # minus decrement and check
-                        self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_loop) + \
-                            self.address_write(
-                                    address = None,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_loop) + \
-                            self.address_write(
-                                    address = repeat_icheck_address,
-                                    special = special_icheck,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
-                    count += 1 + \
-                        ceil(time/self.maxtimestep/ivar)
+                        self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=time_loop,
+                            address={'address' : None,
+                                     'special' : None,
+                                     'cond'    : None,
+                                    },
+                            comment=comment,
+                            )
+                        count += 1
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=time_loop,
+                        address={'address' : repeat_icheck_address,
+                                 'special' : special_icheck,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
+                    count += 1
                 if start.last_step_is_loop and j == seq_len: # if last loop
-                    self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(self.timestep) + \
-                            self.address_write(
-                                    address = end.first_row,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
+                    self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=self.timestep,
+                        address={'address' : end.first_row,
+                                 'special' : None,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
                     count += 1
             elif ceil(time/self.maxtimestep)<1:
                 address = end.first_row if j == seq_len else None
-                self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time) + \
-                            self.address_write(
-                                    address = address,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment=comment) + \
-                            '\n'
+                self.new_dpatt_str += self.writew_line(
+                        dig_chan=dig_chan,
+                        time=time,
+                        address={'address' : address,
+                                 'special' : None,
+                                 'cond'    : None,
+                                },
+                        comment=comment,
+                        )
                 count += 1
             else:
                 additional_rows = ceil(time/self.maxtimestep)
@@ -1289,16 +1264,15 @@ class Translator:
                         address = end.first_row if j == seq_len else None
                         time_to_write = time_left
                         time_left -= time_to_write
-                    self.new_dpatt_str += 'writew ' + \
-                        self.dig_chan_write(dig_chan) + \
-                        self.time_write(int(time_to_write)) + \
-                        self.address_write(
-                                address = address,
-                                special = None,
-                                cond = None,
-                                ) + \
-                        self.row_num_write(comment=comment) + \
-                        '\n'
+                    self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=int(time_to_write),
+                            address={'address' : address,
+                                     'special' : None,
+                                     'cond'    : None,
+                                    },
+                            comment=comment,
+                            )
                     count += 1
         #print("sequence", count, start.num_rows)
 
@@ -1366,91 +1340,84 @@ class Translator:
         special_echeck_address_success = success_row
 
         # load evar
-        self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            '0,' + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_load,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write(comment='#load vars') + \
-                            '\n'
+        self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=self.timestep,
+                            address={'address' : None,
+                                     'special' : special_load,
+                                     'cond'    : None,
+                                    },
+                            comment='#load vars' + comment,
+                            )
         count += 1
         # Time elapse via loop or single ( min 2 just to keep same num of rows)
         if ivar_needed:
             repeat_icheck_address = self.pattern_row
-            self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_span_loop//2) + \
-                            self.address_write(
-                                    address = None,
-                                    special = special_dec,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
-
-            self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_span_loop//2) + \
-                            self.address_write(
-                                    address = repeat_icheck_address,
-                                    special = special_icheck,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
+            self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=time_span_loop//2,
+                            address={'address' : None,
+                                     'special' : special_dec,
+                                     'cond'    : None,
+                                    },
+                            comment='#Decrement internal counter',
+                            )
+            self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=time_span_loop//2,
+                            address={'address' : repeat_icheck_address,
+                                     'special' : special_icheck,
+                                     'cond'    : None,
+                                    },
+                            comment='#Check internal counter',
+                            )
             count += 2
         else:
-            self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            self.time_write(time_span-self.timestep) + \
-                            self.address_write(
-                                    address = None,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
-            self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            '0,' + \
-                            self.address_write(
-                                    address = None,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
+            self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=time_span-self.timestep,
+                            address={'address' : None,
+                                     'special' : None,
+                                     'cond'    : None,
+                                    },
+                            comment='',
+                            )
+            self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=self.timestep,
+                            address={'address' : None,
+                                     'special' : None,
+                                     'cond'    : None,
+                                    },
+                            comment='',
+                            )
             count += 2
 
         # Check evar
-        self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            '0,' + \
-                            self.address_write(
-                                    address = special_echeck_address_failure,
-                                    special = special_echeck,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
-        self.new_dpatt_str += 'writew ' + \
-                            self.dig_chan_write(dig_chan) + \
-                            '0,' + \
-                            self.address_write(
-                                    address = special_echeck_address_success,
-                                    special = None,
-                                    cond = None,
-                                    ) + \
-                            self.row_num_write() + \
-                            '\n'
+        self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=self.timestep,
+                            address={'address' : special_echeck_address_failure,
+                                     'special' : special_echeck,
+                                     'cond'    : None,
+                                    },
+                            comment='#Check evar. Go to address if non-zero' + \
+                            ' (failure)',
+                            )
+        self.new_dpatt_str += self.writew_line(
+                            dig_chan=dig_chan,
+                            time=self.timestep,
+                            address={'address' : special_echeck_address_success,
+                                     'special' : None,
+                                     'cond'    : None,
+                                    },
+                            comment='#Go to address if evar is zero (success)',
+                            )
         count += 2
         #print("trigger", count, num_rows)
 
     def time_write(self, time):
-        return self.w16(num=(time//self.timestep)-1, hex=False)
+        return self.w16(num=(time//self.timestep) - 1, hex=False)
 
     def address_write(self, address = None, special = None, cond = None):
         if cond is None:
@@ -1500,6 +1467,17 @@ class Translator:
             out3 = sum_chan_bits(first = 48, last = 63) >> 48
             return self.w16(out0)+self.w16(out1)+self.w16(out2)+self.w16(out3)
         return self.w16(out0)+self.w16(out1)
+
+    def writew_line(self, dig_chan, time, address, comment=None):
+        """
+        Centralizes all 'writew' line construction. Just pass the raw values and
+        this will call the helpers and return the correctly formatted line.
+        """
+        dig_chan_str = self.dig_chan_write(dig_chan)
+        time_str = self.time_write(time)
+        address_str = self.address_write(**address) if isinstance(address, dict) else self.address_write(address)
+        row_num_str = self.row_num_write(comment=comment)
+        return f"writew {dig_chan_str}{time_str}{address_str}{row_num_str}\n"
 
     def process_config(self):
         b = self.blocks['control']
