@@ -48,11 +48,6 @@ class MermaidParser:
 
     def parse(self):
         mermaid_comment = '%%'
-        loop_pattern_single = re.compile(r'^subgraph\s*(\w+)\s*\[(.+)\]$')
-        loop_pattern_begin = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
-        block_pattern_begin = re.compile(r'^(\w+)\s*\[(.*)$')
-        block_pattern_single = re.compile(r'^(\w+)\s*\[(.+)\]$')
-        logic_pattern = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
         with open(self.file_path, 'r') as file:
             lines = file.readlines()
 
@@ -121,14 +116,12 @@ class MermaidParser:
     def start_loop_block(self, line):
         """
         """
-        loop_pattern_begin = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
-        return self.match_block(line, loop_pattern_begin)
+        return self.match_block(line, LOOP_PATTERN_BEGIN)
 
     def start_multi_block(self, line):
         """
         """
-        block_pattern_begin = re.compile(r'^(\w+)\s*\[(.*)$')
-        return self.match_block(line, block_pattern_begin)
+        return self.match_block(line, BLOCK_PATTERN_BEGIN)
 
     def match_block(self, line, pattern):
         """
@@ -148,9 +141,7 @@ class MermaidParser:
             return False
 
     def get_single_loop_block(self, line):
-        loop_pattern_single = re.compile(r'^subgraph\s*(\w+)\s*\[(.+)\]$')
-        match = loop_pattern_single.match(line)
-        if match:
+        if LOOP_PATTERN_SINGLE.match(line):
             block_id, content = match.groups()
             self.current_block_id = block_id
             self.current_block_lines = [content]
@@ -183,9 +174,7 @@ class MermaidParser:
             key1 --> key2
             key1 --> |key3| key2
         """
-        logic_pattern = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
-        logic_match = logic_pattern.match(line)
-        if logic_match:
+        if LOGIC_PATTERN.match(line):
             if logic_match.lastindex == 3: # Has 3 information
                 self.logic.append((logic_match.group(1),
                     logic_match.group(3),logic_match.group(2)))
@@ -207,9 +196,7 @@ class MermaidParser:
         """  Parses line  and looks for single line block
             block_id [ content ]
         """
-        block_pattern_single = re.compile(r'^(\w+)\s*\[(.+)\]$')
-        match = block_pattern_single.match(line)
-        if match:
+        if BLOCK_PATTERN_SINGLE.match(line):
             block_id, content = match.groups()
             self.blocks[block_id] = content.strip()
             return True
@@ -285,9 +272,6 @@ class Block(MermaidParser):
             dac_list.append(int(ch))
             dac_value.append(float(val))
         return dict(zip(dac_list, dac_value))
-
-    def split_unit(self, string):
-        return re.findall(r'\d+|\D+', string)
 
     def parse_contents(self):
         return self.content.split('\n')
