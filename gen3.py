@@ -389,6 +389,9 @@ class Block:
         cols = []
         return self.dac_update(line), comments, cols 
 
+    def set_dac(self, line):
+        pass
+
     def get_chan(self, cols):
         assert cols[0].lower() == 'chan', "Keyword missing"
         try:
@@ -402,6 +405,9 @@ class Block:
         line, comments = self.split_comments(line)
         return self.chan_on(line), comments, cols
 
+    def set_chan(self, line):
+        self.chan = self.chan_on(','.join(line))
+
     def set_exinput(self, line):
         '''
             Get the external input channel used. Must be e1,e2,e3 or e4.
@@ -411,6 +417,22 @@ class Block:
         assert part in ['e1', 'e2', 'e3', 'e4']
         self.external_input = int(part[1:])
 
+    def assert_grammar(self, key, grammar):
+        if key not in grammar:
+            raise ValueError(f"{key} doesn't match syntax")
+
+    def get_time(self, cols):
+        try:
+            value, unit = UnitConverter.parse_value_unit(cols[0])
+            cols.pop(0)
+        except ValueError:
+            value = cols[0]
+            unit = cols[1]
+            cols.pop(0)
+            cols.pop(0)
+        finally:
+            time = UnitConverter.time(value, unit)
+        return time, cols
 
 class ControlBlock(Block):
     def __init__(self, block_id, content):
@@ -441,7 +463,7 @@ class ControlBlock(Block):
             cols = self.get_cols(line)
             first_col = cols[0]
             next_cols = cols[1:]
-            assert first_col in self.control_grammar, f"{first_col} doesn't match syntax"
+            self.assert_grammar(first_col, self.control_grammar)
             """ # To migrate to python3.10 syntax
             match first_col:
                 case "clock":
@@ -587,18 +609,6 @@ class SeqBlock(Block):
                               'comments' : comments1 + comments2,
                               })
 
-    def get_time(self, cols):
-        try:
-            value, unit = UnitConverter.parse_value_unit(cols[0])
-            cols.pop(0)
-        except ValueError:
-            value = cols[0]
-            unit = cols[1]
-            cols.pop(0)
-            cols.pop(0)
-        finally:
-            time = UnitConverter.time(value, unit)
-        return time, cols
 
     def get_ivar(self, cols):
         '''
@@ -640,7 +650,7 @@ class TriggerBlock(Block):
             next_cols = cols[1:]
             if self.is_comment(next_cols[-1]):
                 self.comment.append(next_cols[-1])
-            assert first_col in self.trigger_grammar, f"{first_col} doesn't match syntax"
+            self.assert_grammar(first_col, self.trigger_grammar)
             if first_col == self.trigger_grammar[0]:
                 self.set_exinput(next_cols)
             elif first_col == self.trigger_grammar[1]:
@@ -655,9 +665,6 @@ class TriggerBlock(Block):
                 self.set_failure(next_cols)
             elif first_col == self.trigger_grammar[6]:
                 self.set_dac(next_cols)
-
-    def set_chan(self, line):
-        self.chan = self.chan_on(','.join(line))
 
     def set_rate(self, line):
         line = self.eat_space_between_units(line)
@@ -702,9 +709,6 @@ class TriggerBlock(Block):
         if failure is not None:
             assert failure == self.failure, "Failure logic doesn't match Block"
         return
-
-    def set_dac(self, line):
-        pass
 
     def process(self):
         self.process_trigger()
@@ -785,7 +789,7 @@ class BranchBlock(Block):
                 next_cols = cols[1:]
                 if self.is_comment(next_cols[-1]):
                     self.comment.append(next_cols[-1])
-                assert first_col in self.branch_grammar, f"{first_col} doesn't match syntax"
+                self.assert_grammar(first_col, self.branch_grammar)
                 if first_col == self.branch_grammar[0]:
                     self.set_exinput(next_cols)
                 elif first_col == self.branch_grammar[1]:
@@ -797,21 +801,10 @@ class BranchBlock(Block):
                 elif first_col == self.branch_grammar[4]:
                     self.get_dac(next_cols)
                 else:
-                    self.get_time(cols)
+                    self.timestep, _ = self.get_time(cols)
             else:
-                self.get_time(cols)
+                self.timestep, _ = self.get_time(cols)
         pass
-    def get_time(self, cols):
-        try:
-            value, unit = UnitConverter.parse_value_unit(cols[0])
-            cols.pop(0)
-        except ValueError:
-            value = cols[0]
-            unit = cols[1]
-            cols.pop(0)
-            cols.pop(0)
-        finally:
-            self.timestep = UnitConverter.time(value, unit)
 
     def set_high(self, outcome):
         self.high = outcome[0]
