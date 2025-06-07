@@ -141,7 +141,8 @@ class MermaidParser:
             return False
 
     def get_single_loop_block(self, line):
-        if LOOP_PATTERN_SINGLE.match(line):
+        match = LOOP_PATTERN_SINGLE.match(line)
+        if match:
             block_id, content = match.groups()
             self.current_block_id = block_id
             self.current_block_lines = [content]
@@ -197,7 +198,8 @@ class MermaidParser:
         """  Parses line  and looks for single line block
             block_id [ content ]
         """
-        if BLOCK_PATTERN_SINGLE.match(line):
+        match = BLOCK_PATTERN_SINGLE.match(line)
+        if match:
             block_id, content = match.groups()
             self.blocks[block_id] = content.strip()
             return True
@@ -210,7 +212,7 @@ class MermaidParser:
     def get_logic(self):
         return self.logic
 
-class Block(MermaidParser):
+class Block:
     def __init__(self, block_id, content):
         self.block_id = block_id
         self.content = content
