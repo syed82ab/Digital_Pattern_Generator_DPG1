@@ -41,12 +41,30 @@ LOOP_PATTERN_BEGIN = re.compile(r'^subgraph\s*(\w+)\s*\[(.*)$')
 LOGIC_PATTERN = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
 
 class MermaidParser:
+    """
+    Parses a Mermaid-like syntax file defining digital pattern generator blocks and their logical connections.
+    
+    Attributes:
+        file_path (str): Path to the input file to parse.
+        blocks (dict): Parsed blocks, mapping block IDs to their content.
+        logic (list): Logical connections between blocks, as parsed from the file.
+    """
     def __init__(self, file_path):
+        """
+        Initialize the MermaidParser with the input file path.
+
+        Args:
+            file_path (str): Path to the input file to parse.
+        """
         self.file_path = file_path
         self.blocks = {}
         self.logic = []
 
     def parse(self):
+        """
+        Parse the input file, populating 'blocks' and 'logic' attributes.
+        Handles single-line blocks, multi-line blocks, loop blocks, and logic connections.
+        """
         mermaid_comment = '%%'
         with open(self.file_path, 'r') as file:
             lines = file.readlines()
@@ -115,16 +133,38 @@ class MermaidParser:
 
     def start_loop_block(self, line):
         """
+        Detect the start of a multi-line loop block.
+
+        Args:
+            line (str): Line to check.
+
+        Returns:
+            bool: True if a loop block begins here, else False.
         """
         return self.match_block(line, LOOP_PATTERN_BEGIN)
 
     def start_multi_block(self, line):
         """
+        Detect the start of a multi-line block.
+
+        Args:
+            line (str): Line to check.
+
+        Returns:
+            bool: True if a multi-line block begins here, else False.
         """
         return self.match_block(line, BLOCK_PATTERN_BEGIN)
 
     def match_block(self, line, pattern):
         """
+        Generic helper to match a line against a block start pattern.
+
+        Args:
+            line (str): The line to check.
+            pattern (re.Pattern): Compiled regex pattern.
+
+        Returns:
+            bool: True if a block match is found, else False.
         """
         start_match = pattern.match(line)
         if start_match and not line.endswith(']'):
@@ -134,6 +174,13 @@ class MermaidParser:
 
     def end_of_loop(self, line):
         """
+        Check if a line marks the end of a loop block.
+
+        Args:
+            line (str): The line to check.
+
+        Returns:
+            bool: True if this is an 'end' line.
         """
         if line.startswith('end'):
             return True
@@ -141,6 +188,15 @@ class MermaidParser:
             return False
 
     def get_single_loop_block(self, line):
+        """
+        Parse a single-line loop block.
+
+        Args:
+            line (str): The line to check.
+
+        Returns:
+            bool: True if a single-line loop block is found and added.
+        """
         match = LOOP_PATTERN_SINGLE.match(line)
         if match:
             block_id, content = match.groups()
@@ -150,7 +206,13 @@ class MermaidParser:
 
     def end_of_line(self, line):
         """
-           Checks for end of line
+        Check if a line marks the end of a block (i.e., ends with ']').
+
+        Args:
+            line (str): The line to check.
+
+        Returns:
+            bool: True if the line ends a block.
         """
         if line.endswith(']'):
             return True
@@ -159,21 +221,34 @@ class MermaidParser:
 
     def block_join(self, line):
         """
+        Join lines to complete a multi-line block and add it to blocks.
+
+        Args:
+            line (str): The final line of the block.
         """
         self.current_block_lines.append(line[:-1])
         self.blocks[self.current_block_id] = "\n".join(self.current_block_lines).strip()
         return
 
     def block_append(self, line):
+        """
+        Append a line to the current block being parsed.
+
+        Args:
+            line (str): The line to append.
+        """
         self.current_block_lines.append(line)
         return
 
     def match_logic(self, line):
         """
-            Parses line to get any logic information 
+        Parse a line for logical connections between blocks and update logic.
             e.g:
             key1 --> key2
             key1 --> |key3| key2
+        Args:
+            line (str): The line to check.
+      
         """
         logic_match = LOGIC_PATTERN.match(line)
         if logic_match:
@@ -185,7 +260,13 @@ class MermaidParser:
 
     def ignore_comments(self, line):
         """
-            Parses line and remove comments, empty line or flowchart keyword
+        Parses line and remove comments, empty line or flowchart keyword
+        
+        Args:
+            line (str): The line to check.
+
+        Returns:
+            bool: True if the line should be ignored.
         """
         mermaid_comment = '%%'
         if not line or line.startswith("flowchart") or \
@@ -195,8 +276,15 @@ class MermaidParser:
             return False
 
     def get_single_line_block(self, line):
-        """  Parses line  and looks for single line block
-            block_id [ content ]
+        """  
+        Parses line  and looks for single line block
+        block_id [ content ]
+
+        Args:
+            line (str): The line to check.
+
+        Returns:
+            bool: True if a single-line block is found and added.
         """
         match = BLOCK_PATTERN_SINGLE.match(line)
         if match:
@@ -207,9 +295,21 @@ class MermaidParser:
             return False
 
     def get_blocks(self):
+        """
+        Get the parsed blocks.
+
+        Returns:
+            dict: The blocks dictionary.
+        """
         return self.blocks
 
     def get_logic(self):
+        """
+        Get the parsed logic connections.
+
+        Returns:
+            list: The logic list.
+        """
         return self.logic
 
 class Block:
