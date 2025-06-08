@@ -849,9 +849,10 @@ BlockFactory.register("loop", LoopBlock)
 BlockFactory.register("branch", BranchBlock)
 
 class Translator:
-    def __init__(self, blocks, logic, filein, fileout, hex=True):
+    def __init__(self, blocks, logic, filein, fileout, hex=True, verbose=False):
         self.blocks = {}
         self.hex = hex
+        self.verbose = verbose
         self.logic = logic
         self.config_bits = 0
         self.param_register = []
@@ -1089,7 +1090,7 @@ class Translator:
                          'special' : special_dec,
                          'cond'    : None,
                          },
-                comment=comment,
+                comment=f"Decrement {ivar_chan}, " + comment,
                 )
         count += 2
         for block_start, block_end, condition in loop_block.loop_logic:
@@ -1115,7 +1116,9 @@ class Translator:
                          'special' : special_icheck,
                          'cond'    : None,
                          },
-                comment=comment,
+                comment=f"#Check {ivar_chan}. Go to " + \
+                       f"row {repeat_icheck_address}" + \
+                        ", if ivar is non-zero" + comment,
                 )
         address = loop_end.first_row
         self.new_dpatt_str += self.writew_line(
@@ -1125,7 +1128,7 @@ class Translator:
                          'special' : None,
                          'cond'    : None,
                          },
-                comment=comment,
+                comment=f"Go to row {address}, if ivar is zero." + comment,
                 )
         count += 2
         #print("loop", count, loop_block.num_rows)
@@ -1149,6 +1152,14 @@ class Translator:
                 special_load = (1<<12) + ((2**ivar_chan)<<4)
                 special_dec = (1<<12) + ((2**ivar_chan)<<8)
                 special_icheck = ((12 + ivar_chan)<<12)
+                if self.verbose:
+                    load_comment = f"Load internal counter {ivar_chan} "
+                    dec_comment = "Decrease ivar by 1"
+                    check_comment = "Check ivar"
+                else:
+                    load_comment = ""
+                    dec_comment = ""
+                    check_comment = ""
                 if time/self.maxtimestep/ivar/2 <= 1:
                     time_loop, load_timestep= self.timebalancer(time, ivar, 2)
                     #print(time,ivar,time_loop,load_timestep)
@@ -1159,7 +1170,7 @@ class Translator:
                                  'special' : special_load,
                                  'cond'    : None,
                                 },
-                        comment=f"Load internal counter {ivar_chan} " + comment,
+                        comment= load_comment + comment,
                         )
                     repeat_icheck_address = self.pattern_row
                     self.new_dpatt_str += self.writew_line(
@@ -1169,7 +1180,7 @@ class Translator:
                                  'special' : special_dec,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment= dec_comment + comment,
                         )
                     self.new_dpatt_str += self.writew_line(
                         dig_chan=dig_chan,
@@ -1178,7 +1189,7 @@ class Translator:
                                  'special' : special_icheck,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment=check_comment + comment,
                         )
                     count += 3 # For load, decrement and check
                 else: # Happens at >84.8 s with max ivar(65535)
@@ -1192,7 +1203,7 @@ class Translator:
                                  'special' : special_load,
                                  'cond'    : None,
                                 },
-                        comment=f"Load internal counter {ivar_chan} " + comment,
+                        comment=load_comment + comment,
                         )
                     repeat_icheck_address = self.pattern_row
                     self.new_dpatt_str += self.writew_line(
@@ -1202,7 +1213,7 @@ class Translator:
                                  'special' : special_dec,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment=dec_comment + comment,
                         )
                     count += 2
                     for ii in range(lines-2): # minus decrement and check
@@ -1223,7 +1234,7 @@ class Translator:
                                  'special' : special_icheck,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment=check_comment + comment,
                         )
                     count += 1
                 if start.last_step_is_loop and j == seq_len: # if last loop
@@ -1347,7 +1358,7 @@ class Translator:
                                      'special' : special_load,
                                      'cond'    : None,
                                     },
-                            comment='#load vars' + comment,
+                            comment='#load vars',
                             )
         count += 1
         # Time elapse via loop or single ( min 2 just to keep same num of rows)
@@ -1401,8 +1412,9 @@ class Translator:
                                      'special' : special_echeck,
                                      'cond'    : None,
                                     },
-                            comment='#Check evar. Go to address if non-zero' + \
-                            ' (failure)',
+                            comment="#Check evar. Go to " + \
+                            f"row {special_echeck_address_failure}" + \
+                            ", if evar is non-zero(failure)",
                             )
         self.new_dpatt_str += self.writew_line(
                             dig_chan=dig_chan,
@@ -1411,7 +1423,9 @@ class Translator:
                                      'special' : None,
                                      'cond'    : None,
                                     },
-                            comment='#Go to address if evar is zero (success)',
+                            comment="#Go to row " + \
+                            f"{special_echeck_address_success}" + \
+                            ", if evar is zero (success)",
                             )
         count += 2
         #print("trigger", count, num_rows)
@@ -1541,12 +1555,17 @@ if __name__ == "__main__":
             help="Output file for DPG")
     parser.add_argument(
             "--hex", "-H", action="count", default=0,
-            help="Write ")
+            help="Write 16 bit words in hexadecimal, except for time word")
+    parser.add_argument(
+            "--verbose", "-v", action="store_true",
+            help="Set verbosity of comments in output pattern file")
     args = parser.parse_args()
     filename = args.infile
     fileout = args.outfile
+    verbose = args.verbose
     hex_mode = True if args.hex>0 else False
     p = MermaidParser(filename)
     p.parse()
-    out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex_mode)
+    out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex_mode,
+            verbose)
     
