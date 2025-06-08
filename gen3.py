@@ -6,13 +6,36 @@ from math import ceil
 
 # === UnitConverter ===
 class UnitConverter:
-    """Centralized utilities for frequency and time unit conversions."""
+    """
+    Centralized utilities for frequency and time unit conversions.
+
+    Supported frequency units: MHz, kHz, Hz.
+    Supported time units: ms, us, ns.
+
+    Example:
+        >>> UnitConverter.freq(10, 'kHz')
+        10000
+        >>> UnitConverter.time(5, 'us')
+        5000
+    """
     freq_units = {'mhz': 1_000_000, 'khz': 1_000, 'hz': 1}
     time_units = {'ms': 1_000_000, 'us': 1_000, 'ns': 1}
 
     @staticmethod
     def freq(value, unit):
-        """Convert frequency with unit (e.g. 10, 'kHz') to Hz."""
+        """
+        Convert frequency value and unit to Hz.
+
+        Args:
+            value (int): Frequency value.
+            unit (str): Frequency unit ('MHz', 'kHz', 'Hz').
+
+        Returns:
+            int: Frequency in Hz.
+
+        Raises:
+            ValueError: If unit is not supported.
+        """
         unit = unit.lower()
         if unit not in UnitConverter.freq_units:
             raise ValueError(f"Unknown frequency unit: {unit}")
@@ -44,10 +67,24 @@ class MermaidParser:
     """
     Parses a Mermaid-like syntax file defining digital pattern generator blocks and their logical connections.
     
+    Args:
+        file_path (str): Path to the Mermaid-like input file.
+
     Attributes:
-        file_path (str): Path to the input file to parse.
-        blocks (dict): Parsed blocks, mapping block IDs to their content.
-        logic (list): Logical connections between blocks, as parsed from the file.
+        blocks (dict): Maps block IDs to their content strings.
+        logic (list): List of tuples representing logical connections between blocks, e.g., (block_start, block_end, condition).
+
+    Example:
+        Input file format:
+            blockA [ content ]
+            blockB [ more content ]
+            blockA --> blockB
+
+        Usage:
+            parser = MermaidParser("input.txt")
+            parser.parse()
+            blocks = parser.get_blocks()
+            logic = parser.get_logic()
     """
     def __init__(self, file_path):
         """
