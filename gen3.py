@@ -285,7 +285,7 @@ class MermaidParser:
             key1 --> |key3| key2
         Args:
             line (str): The line to check.
-      
+
         """
         logic_match = LOGIC_PATTERN.match(line)
         if logic_match:
@@ -298,7 +298,7 @@ class MermaidParser:
     def ignore_comments(self, line):
         """
         Parses line and remove comments, empty line or flowchart keyword
-        
+
         Args:
             line (str): The line to check.
 
@@ -392,7 +392,11 @@ class Block(MermaidParser):
         for part in self.get_cols(dac_string):
             ch, val = part.split(":")
             dac_list.append(int(ch))
-            dac_value.append(float(val))
+            if val.isdigit():
+                dac_value.append(int(val))
+            else:
+                val =  self.volt_to_16bit(float(val))
+                dac_value.append(val)
         return dict(zip(dac_list, dac_value))
 
     def parse_contents(self):
@@ -425,6 +429,19 @@ class Block(MermaidParser):
         line, comments = self.split_comments(line)
         cols = []
         return self.dac_update(line), comments, cols 
+
+    def volt_to_16bit(self,val):
+        slope = 0.00031433585
+        if val > 10.3 or val < -10.3:
+            assert "DAC float value out of range. -10.3 < V < 10.3"
+        elif val > 0:
+            ret_val = int(val/slope)
+        elif val < 0:
+            ret_val = int(0xffff + int(val/slope))
+        else:
+            ret_val = 0
+        assert ret_val>=0 and ret_val < 65535, "Something strange"
+        return ret_val
 
     def set_dac(self, line):
         pass
@@ -701,7 +718,7 @@ class TriggerBlock(Block):
             elif first_col == self.trigger_grammar[5]:
                 self.set_failure(next_cols)
             elif first_col == self.trigger_grammar[6]:
-                self.set_dac(next_cols)
+                self.get_dac(next_cols)
 
     def set_rate(self, line):
         line = self.eat_space_between_units(line)
@@ -1063,14 +1080,14 @@ class Translator:
     def process_branch_logic(self, branch_block, end, condition):
         count = 0
         ext_chan = branch_block.external_input
-        dig_chan = branch_block.chan
+        dig_chan = {'chan' :branch_block.chan, 'dac': branch_block.dac}
         timestep = branch_block.timestep
         comment = ''
         special_bcheck_address_high = self.blocks[branch_block.high].first_row
         special_bcheck_address_low = self.blocks[branch_block.low].first_row
         special_bcheck = ((ext_chan+3)<<12)
         self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=timestep,
                 address={'address' : special_bcheck_address_high,
                          'special' : special_bcheck,
@@ -1081,7 +1098,7 @@ class Translator:
         count +=1
         if branch_block.num_rows == 2:
             self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=timestep,
                 address={'address' : special_bcheck_address_low,
                          'special' : None,
@@ -1099,7 +1116,8 @@ class Translator:
                               loop_block.loop_name + "\n"
 
         ivar_chan = loop_block.counter_var
-        dig_chan = loop_block.loop_set['chan']
+        dig_chan = {'chan': loop_block.loop_set['chan'],
+                    'dac': loop_block.loop_set['dac']}
         load_timestep = self.timestep
         timestep = self.timestep
         comment  =loop_block.loop_set['comments']
@@ -1111,7 +1129,7 @@ class Translator:
         ivar = loop_block.counter_val
 
         self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=load_timestep,
                 address={'address' : None,
                          'special' : special_load,
@@ -1121,7 +1139,7 @@ class Translator:
                 )
         repeat_icheck_address = self.pattern_row
         self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=timestep,
                 address={'address' : None,
                          'special' : special_dec,
@@ -1147,7 +1165,7 @@ class Translator:
                 self.process_seq_logic(start, end)
 
         self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=timestep,
                 address={'address' : repeat_icheck_address,
                          'special' : special_icheck,
@@ -1159,7 +1177,7 @@ class Translator:
                 )
         address = loop_end.first_row
         self.new_dpatt_str += self.writew_line(
-                dig_chan=dig_chan,
+                channels=dig_chan,
                 time=timestep,
                 address={'address' : address,
                          'special' : None,
@@ -1178,7 +1196,7 @@ class Translator:
         for j, step in enumerate(start.sequence):
             time = step['time']
             ivar_chan = step['use_ivar']
-            dig_chan = step['chan']
+            dig_chan = {'chan': step['chan'], 'dac': step['dac']}
             comment = step['comments']
             ivar = self.ivars[ivar_chan] if ivar_chan else None
             if ivar:
@@ -1201,7 +1219,7 @@ class Translator:
                     time_loop, load_timestep= self.timebalancer(time, ivar, 2)
                     #print(time,ivar,time_loop,load_timestep)
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=load_timestep,
                         address={'address' : None,
                                  'special' : special_load,
@@ -1211,7 +1229,7 @@ class Translator:
                         )
                     repeat_icheck_address = self.pattern_row
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=time_loop,
                         address={'address' : None,
                                  'special' : special_dec,
@@ -1220,7 +1238,7 @@ class Translator:
                         comment= dec_comment + comment,
                         )
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=time_loop,
                         address={'address' : repeat_icheck_address,
                                  'special' : special_icheck,
@@ -1234,7 +1252,7 @@ class Translator:
                     time_loop, load_timestep= self.timebalancer(time, ivar,
                             lines)
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=load_timestep,
                         address={'address' : None,
                                  'special' : special_load,
@@ -1244,7 +1262,7 @@ class Translator:
                         )
                     repeat_icheck_address = self.pattern_row
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=time_loop,
                         address={'address' : None,
                                  'special' : special_dec,
@@ -1255,7 +1273,7 @@ class Translator:
                     count += 2
                     for ii in range(lines-2): # minus decrement and check
                         self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=time_loop,
                             address={'address' : None,
                                      'special' : None,
@@ -1265,7 +1283,7 @@ class Translator:
                             )
                         count += 1
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=time_loop,
                         address={'address' : repeat_icheck_address,
                                  'special' : special_icheck,
@@ -1276,7 +1294,7 @@ class Translator:
                     count += 1
                 if start.last_step_is_loop and j == seq_len: # if last loop
                     self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=self.timestep,
                         address={'address' : end.first_row,
                                  'special' : None,
@@ -1288,7 +1306,7 @@ class Translator:
             elif ceil(time/self.maxtimestep)<1:
                 address = end.first_row if j == seq_len else None
                 self.new_dpatt_str += self.writew_line(
-                        dig_chan=dig_chan,
+                        channels=dig_chan,
                         time=time,
                         address={'address' : address,
                                  'special' : None,
@@ -1313,7 +1331,7 @@ class Translator:
                         time_to_write = time_left
                         time_left -= time_to_write
                     self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=int(time_to_write),
                             address={'address' : address,
                                      'special' : None,
@@ -1366,7 +1384,7 @@ class Translator:
                 ivar_needed = ivar_needed,
                 ivar_chan = ivar_chan,
                 evar_chan = start.external_input-1,
-                dig_chan = start.chan,
+                dig_chan = {'chan': start.chan, 'dac': start.dac},
                 failure_row = failure_row,
                 success_row = success_row,
                 num_rows = start.num_rows)
@@ -1389,7 +1407,7 @@ class Translator:
 
         # load evar
         self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=self.timestep,
                             address={'address' : None,
                                      'special' : special_load,
@@ -1402,7 +1420,7 @@ class Translator:
         if ivar_needed:
             repeat_icheck_address = self.pattern_row
             self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=time_span_loop//2,
                             address={'address' : None,
                                      'special' : special_dec,
@@ -1411,7 +1429,7 @@ class Translator:
                             comment='#Decrement internal counter',
                             )
             self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=time_span_loop//2,
                             address={'address' : repeat_icheck_address,
                                      'special' : special_icheck,
@@ -1422,7 +1440,7 @@ class Translator:
             count += 2
         else:
             self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=time_span-self.timestep,
                             address={'address' : None,
                                      'special' : None,
@@ -1431,7 +1449,7 @@ class Translator:
                             comment='',
                             )
             self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=self.timestep,
                             address={'address' : None,
                                      'special' : None,
@@ -1443,7 +1461,7 @@ class Translator:
 
         # Check evar
         self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=self.timestep,
                             address={'address' : special_echeck_address_failure,
                                      'special' : special_echeck,
@@ -1454,7 +1472,7 @@ class Translator:
                             ", if evar is non-zero(failure)",
                             )
         self.new_dpatt_str += self.writew_line(
-                            dig_chan=dig_chan,
+                            channels=dig_chan,
                             time=self.timestep,
                             address={'address' : special_echeck_address_success,
                                      'special' : None,
@@ -1508,7 +1526,7 @@ class Translator:
                     f"Using ivar chan {good_ivar} with {min_rows} rows.")
             return good_ivar, min_rows
 
-    def dig_chan_write(self,chan):
+    def dig_chan_write(self, chan):
         def sum_chan_bits(chan=chan, first=0, last=15):
             return sum([2**i if i>=first and i<=last else 0 for i in chan])
         out0 = sum_chan_bits(first = 0, last = 15)
@@ -1519,16 +1537,77 @@ class Translator:
             return self.w16(out0)+self.w16(out1)+self.w16(out2)+self.w16(out3)
         return self.w16(out0)+self.w16(out1)
 
-    def writew_line(self, dig_chan, time, address, comment=None):
+    def split_chan_dig_dac(self, channels):
+        """
+        Splits the channels set into digital part and dac parts
+        """
+        return channels['chan'], channels['dac']
+
+    def dac_config_allow(self, dac_chan):
+        dac_write_allowed = True
+        if self.dacconfig == 0: # All static
+            if len(dac_chan)>0:
+                dac_write_allowed = False
+                assert dac_write_allowed, "dacconfig set to static. No write"+ \
+                                          " allowed"
+            else:
+                dac_write_allowed = True
+        elif self.dacconfig == 1: # Single 0, others static
+            for i in dac_chan.keys():
+                if i>0:
+                    dac_write_allowed = False
+                    assert dac_write_allowed, "dacconfig set to single. "+ \
+                                          "Only dac 0 write allowed"
+                elif i==0:
+                    dac_write_allowed = True
+        elif self.dacconfig == 2: # Half 0-3, others static
+            for i in dac_chan.keys():
+                if i>3:
+                    dac_write_allowed = False
+                    assert dac_write_allowed, "dacconfig set to half. "+ \
+                                          "Only dac 0,1,2,3 writes allowed"
+                elif i>=0 and i<4:
+                    dac_write_allowed = True
+        elif self.dacconfig == 4: # All variable
+            for i in dac_chan.keys():
+                if i>7:
+                    dac_write_allowed = False
+                    assert dac_write_allowed, "dacconfig set to full. "+ \
+                                          "Only 0-7 DAC present"
+                elif i>=0 and i<8:
+                    dac_write_allowed = True
+        return dac_write_allowed
+
+    def dac_chan_write(self, dac_chan):
+        assert self.patgen_128bit, "DAC not present in 64bit version"
+        if len(dac_chan)==0:
+            return self.w16(0) + self.w16(0) # Short circuit, 0,0 for dac
+        assert self.dac_config_allow(dac_chan), "DAC channel static in config"
+        first_dac_value = next(iter(dac_chan.values()))
+        assert all(value == first_dac_value for value in dac_chan.values()), \
+                            "Only one unique DAC value can be set per step."
+
+        dac_value = first_dac_value
+        dac_mask = 0
+        for i in dac_chan.keys():
+            dac_mask += 1<<i
+        return self.w16(dac_value) + self.w16(dac_mask)
+
+    def writew_line(self, channels, time, address, comment=None):
         """
         Centralizes all 'writew' line construction. Just pass the raw values and
         this will call the helpers and return the correctly formatted line.
         """
+        dig_chan, dac_chan = self.split_chan_dig_dac(channels)
         dig_chan_str = self.dig_chan_write(dig_chan)
         time_str = self.time_write(time)
         address_str = self.address_write(**address) if isinstance(address, dict) else self.address_write(address)
         row_num_str = self.row_num_write(comment=comment)
-        return f"writew {dig_chan_str}{time_str}{address_str}{row_num_str}\n"
+        if self.patgen_128bit:
+            dac_chan_str = self.dac_chan_write(dac_chan)
+        else:
+            dac_chan_str = ""
+        return f"writew {dig_chan_str}{dac_chan_str}{time_str}{address_str}{row_num_str}\n"
 
     def process_config(self):
         b = self.blocks['control']
@@ -1536,6 +1615,7 @@ class Translator:
         self.maxtimestep = self.timestep*65536
         if b.patgen_128bit:
             self.patgen_128bit = True
+            self.dacconfig = b.dacconfig
             self.config_bits += b.dacconfig<<11 #bits 12:11
             self.config_bits += b.auxline_pol<<10 # bit 10
             self.param_register = [b.start_address, b.inthreshold,
@@ -1605,4 +1685,4 @@ if __name__ == "__main__":
     p.parse()
     out = Translator(p.get_blocks(), p.get_logic(), filename, fileout, hex_mode,
             verbose)
-    
+
