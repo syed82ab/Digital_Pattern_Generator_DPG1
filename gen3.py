@@ -350,7 +350,26 @@ class MermaidParser:
         return self.logic
 
 class Block(MermaidParser):
+    """
+    Base class for representing a block in the pattern generator.
+
+    This class provides common functionalities for parsing block content,
+    handling comments, and extracting channel, DAC, and time information.
+    Specific block types (Control, Sequence, Trigger, Loop, Branch)
+    inherit from this class.
+
+    Args:
+        block_id (str): The unique identifier for the block.
+        content (str): The raw string content of the block.
+    """
     def __init__(self, block_id, content):
+        """
+        Initializes a Block instance.
+
+        Args:
+            block_id (str): The unique identifier for the block.
+            content (str): The raw string content of the block.
+        """
         self.block_id = block_id
         self.content = content
         self.first_row = None
@@ -358,6 +377,18 @@ class Block(MermaidParser):
         self.written = False
 
     def split_comments(self,line):
+        """
+        Splits a line into its content and an optional comment part.
+
+        Comments are expected to start with '#'.
+
+        Args:
+            line (str): The input line.
+
+        Returns:
+            tuple: A tuple containing the line content (str) and the comment (str).
+                   If no comment is found, the comment string is empty.
+        """
         text = line.split("#",1)
         if len(text)>1:
             line = text[0]
@@ -368,6 +399,17 @@ class Block(MermaidParser):
         return line, comment
 
     def get_cols(self, line):
+        """
+        Splits a line into columns based on delimiters (',', ' ', '\t')
+        and handles comments.
+
+        Args:
+            line (str): The input line.
+
+        Returns:
+            list: A list of strings, where each string is a column.
+                  Comments are appended as the last element if present.
+        """
         line, comment = self.split_comments(line)
         delimiter = ",| |\t"
         line = line.lower()
@@ -377,6 +419,18 @@ class Block(MermaidParser):
         return cols
 
     def chan_on(self, chan_string):
+        """
+        Parses a channel string and returns a list of active channel numbers.
+
+        The string can contain individual numbers or ranges (e.g., "1-3").
+        Example: "0 2-4 7" -> [0, 2, 3, 4, 7]
+
+        Args:
+            chan_string (str): The string defining active channels.
+
+        Returns:
+            list: A sorted list of unique active channel integers.
+        """
         chan_list = []
         for part in self.get_cols(chan_string):
             if '-' in part:
@@ -387,6 +441,19 @@ class Block(MermaidParser):
         return list(set(chan_list)) # remove duplicate
 
     def dac_update(self, dac_string):
+        """
+        Parses a DAC string and returns a dictionary of DAC channel-value pairs.
+
+        Format: "ch:val ch:val ..."
+        Values can be integers or float voltages (which are converted to 16-bit).
+        Example: "0:100 1:2.5V" -> {0: 100, 1: <16-bit value for 2.5V>}
+
+        Args:
+            dac_string (str): The string defining DAC updates.
+
+        Returns:
+            dict: A dictionary mapping DAC channel numbers (int) to their values (int).
+        """
         dac_list = []
         dac_value = []
         for part in self.get_cols(dac_string):
@@ -400,15 +467,41 @@ class Block(MermaidParser):
         return dict(zip(dac_list, dac_value))
 
     def parse_contents(self):
+        """
+        Splits the raw block content into a list of lines.
+
+        Returns:
+            list: A list of strings, where each string is a line from the block content.
+        """
         return self.content.split('\n')
 
     def is_comment(self, line):
+        """
+        Checks if a given line is a comment line (starts with '#').
+
+        Args:
+            line (str): The input line.
+
+        Returns:
+            bool: True if the line is a comment, False otherwise.
+        """
         if line.strip().startswith("#"):
             return True
         else:
             return False
 
     def eat_space_between_units(self, l):
+        """
+        Merges numerical values with their units if they are separated by space.
+
+        Example: ["10", "ms"] -> ["10ms"]
+
+        Args:
+            l (list): A list of strings (columns).
+
+        Returns:
+            list: The modified list with values and units merged.
+        """
         t = [x in UnitConverter.time_units for x in l]
         f = [x in UnitConverter.freq_units for x in l]
         for i, x in enumerate(t):
@@ -424,13 +517,39 @@ class Block(MermaidParser):
         return l
 
     def get_dac(self, cols):
+        """
+        Extracts DAC information from a list of columns.
+
+        Expects the first column to be 'dac' (case-insensitive).
+
+        Args:
+            cols (list): A list of strings representing columns from a line.
+
+        Returns:
+            tuple: A tuple containing:
+                - dac_updates (dict): DAC channel-value pairs.
+                - comments (str): Any comments found on the line.
+                - remaining_cols (list): The columns remaining after DAC parsing.
+        """
         assert cols[0].lower() == 'dac', "Keyword missing"
         line = ','.join(cols[1:])
         line, comments = self.split_comments(line)
         cols = []
-        return self.dac_update(line), comments, cols 
+        return self.dac_update(line), comments, cols
 
     def volt_to_16bit(self,val):
+        """
+        Converts a voltage value to its 16-bit representation.
+
+        Args:
+            val (float): The voltage value (between -10.3V and 10.3V).
+
+        Returns:
+            int: The 16-bit integer representation of the voltage.
+
+        Raises:
+            AssertionError: If the voltage is out of range or conversion is unexpected.
+        """
         slope = 0.00031433585
         if val > 10.3 or val < -10.3:
             assert "DAC float value out of range. -10.3 < V < 10.3"
@@ -444,9 +563,31 @@ class Block(MermaidParser):
         return ret_val
 
     def set_dac(self, line):
+        """
+        Placeholder method for setting DAC values.
+        Currently not implemented.
+
+        Args:
+            line (list): A list of strings representing parts of a DAC command.
+        """
         pass
 
     def get_chan(self, cols):
+        """
+        Extracts active channel information from a list of columns.
+
+        Expects the first column to be 'chan' (case-insensitive).
+        Can optionally be followed by 'dac' information.
+
+        Args:
+            cols (list): A list of strings representing columns from a line.
+
+        Returns:
+            tuple: A tuple containing:
+                - active_channels (list): A list of active channel numbers.
+                - comments (str): Any comments found on the line.
+                - remaining_cols (list): Columns related to DAC or empty if none.
+        """
         assert cols[0].lower() == 'chan', "Keyword missing"
         try:
             dac_idx = cols.index('dac')
@@ -460,22 +601,62 @@ class Block(MermaidParser):
         return self.chan_on(line), comments, cols
 
     def set_chan(self, line):
+        """
+        Sets the active channels for the block.
+
+        Args:
+            line (list): A list of strings representing channel information.
+                         These are joined and parsed by `chan_on`.
+        """
         self.chan = self.chan_on(','.join(line))
 
     def set_exinput(self, line):
-        '''
-            Get the external input channel used. Must be e1,e2,e3 or e4.
-            Returns 1,2,3 or 4.
-        '''
+        """
+        Sets the external input channel used by the block.
+
+        The input channel must be one of 'e1', 'e2', 'e3', or 'e4'.
+        This method sets `self.external_input` to the integer part (1, 2, 3, or 4).
+
+        Args:
+            line (list): A list of strings, where the first element is the
+                         external input designator (e.g., "e1").
+
+        Raises:
+            AssertionError: If the input designator is not valid.
+        """
         part = line[0]
         assert part in ['e1', 'e2', 'e3', 'e4']
         self.external_input = int(part[1:])
 
     def assert_grammar(self, key, grammar):
+        """
+        Checks if a given key is present in the expected grammar.
+
+        Args:
+            key (str): The keyword to check.
+            grammar (list or dict): A collection of valid keywords.
+
+        Raises:
+            ValueError: If the key is not found in the grammar.
+        """
         if key not in grammar:
             raise ValueError(f"{key} doesn't match syntax")
 
     def get_time(self, cols):
+        """
+        Extracts time information (value and unit) from columns and converts to nanoseconds.
+
+        Time can be specified as "value_unit" (e.g., "10ns") or "value unit" (e.g., "10 ns").
+
+        Args:
+            cols (list): A list of strings representing columns. The time information
+                         is expected at the beginning of this list.
+
+        Returns:
+            tuple: A tuple containing:
+                - time_ns (int): The time value in nanoseconds.
+                - remaining_cols (list): The columns remaining after time parsing.
+        """
         try:
             value, unit = UnitConverter.parse_value_unit(cols[0])
             cols.pop(0)
@@ -489,7 +670,20 @@ class Block(MermaidParser):
         return time, cols
 
 class ControlBlock(Block):
+    """
+    Represents a 'control' block in the pattern generator.
+
+    This block defines global configuration settings for the pattern generator,
+    such as clock frequency, variable initial values, DAC configurations, etc.
+
+    Args:
+        block_id (str): The unique identifier for the block (e.g., "control").
+        content (str): The raw string content of the control block.
+    """
     def __init__(self, block_id, content):
+        """
+        Initializes a ControlBlock instance with default values and grammar.
+        """
         super().__init__(block_id, content)
         self.block_type = "control"
         self.auxconfig = 0
@@ -501,7 +695,7 @@ class ControlBlock(Block):
         self.level = 0 # Set to NIM by default
         self.dacconfig = 0 # Set to static by default
         self.patgen_128bit = False # Set to 64bit version by default
-        self.dacs = [0,0,0,0,0,0,0,0]
+        self.dacs = [0,0,0,0,0,0,0,0] # Static DAC values
         self.inthreshold = 59000 # Nim by default
 
 
@@ -513,40 +707,54 @@ class ControlBlock(Block):
                 "startaddress", "dacstatic"]
 
     def process_control(self):
+        """
+        Parses the content of the control block and sets the configuration attributes.
+
+        Iterates through each line of the block content, identifies the control
+        command, and calls the appropriate setter method.
+        """
         for line in self.parse_contents():
             cols = self.get_cols(line)
             first_col = cols[0]
             next_cols = cols[1:]
             self.assert_grammar(first_col, self.control_grammar)
-            """ # To migrate to python3.10 syntax
-            match first_col:
-                case "clock":
-                    ...
-                case "evars":
-                    ...
-            """
-            if first_col == self.control_grammar[0]:
+            # Python 3.10+ match/case equivalent:
+            # match first_col:
+            #     case "clock": self.set_clock(next_cols)
+            #     case "evars": self.set_evars(next_cols)
+            #     ...
+            if first_col == self.control_grammar[0]: # clock
                 self.set_clock(next_cols)
-            elif first_col == self.control_grammar[1]:
+            elif first_col == self.control_grammar[1]: # evars
                 self.set_evars(next_cols)
-            elif first_col == self.control_grammar[2]:
+            elif first_col == self.control_grammar[2]: # ivars
                 self.set_ivars(next_cols)
-            elif first_col == self.control_grammar[3]:
+            elif first_col == self.control_grammar[3]: # auxout
                 self.set_auxline_polarity(next_cols)
-            elif first_col == self.control_grammar[4]:
+            elif first_col == self.control_grammar[4]: # dacconfig
                 self.set_DACconfig(next_cols)
-            elif first_col == self.control_grammar[5]:
+            elif first_col == self.control_grammar[5]: # version
                 self.set_patgenversion(next_cols)
-            elif first_col == self.control_grammar[6]:
+            elif first_col == self.control_grammar[6]: # inlevel
                 self.set_external_input_polarity(next_cols)
-            elif first_col == self.control_grammar[7]:
+            elif first_col == self.control_grammar[7]: # auxconfig
                 self.set_auxconfig(next_cols)
-            elif first_col == self.control_grammar[8]:
+            elif first_col == self.control_grammar[8]: # startaddress
                 self.set_startaddress(next_cols)
-            elif first_col == self.control_grammar[9]:
+            elif first_col == self.control_grammar[9]: # dacstatic
                 self.set_staticDAC(next_cols)
 
     def set_clock(self, clock_cols):
+        """
+        Sets the clock frequency and selection mode.
+
+        Args:
+            clock_cols (list): Columns containing clock information.
+                               Example: ["100mhz", "auto"]
+
+        Raises:
+            AssertionError: If clock frequency is too high or settings are inconsistent.
+        """
         clock_cols = self.eat_space_between_units(clock_cols)
         for i, part in enumerate(clock_cols):
             if i == 0: # Clock value and unit
@@ -559,45 +767,102 @@ class ControlBlock(Block):
             self.clock_select = self.clockselect.get(part)
         else:
             self.clock_select = 0 # auto by default
-        if self.clock_select != 3:
-            assert self.clock == 100_000_000, "Clock select and clock freq don't agree"
+        if self.clock_select != 3: # direct mode allows any clock
+            assert self.clock == 100_000_000, "Clock select and clock freq don't agree for non-direct modes"
 
     def set_evars(self, evars_cols):
+        """
+        Sets the initial values for external variables (evars).
+
+        Args:
+            evars_cols (list): A list of up to 4 integer values for evars.
+
+        Raises:
+            AssertionError: If more than 4 evars are provided or a value overflows.
+        """
         assert len(evars_cols) <= 4, "Too many external vars"
         for i, val in enumerate(evars_cols):
             val = int(val)
-            assert val < 65536, "External variable overflow"
+            assert val < 65536, "External variable overflow (must be < 65536)"
             self.evars[i] = val
 
     def set_ivars(self, ivars_cols):
+        """
+        Sets the initial values for internal variables (ivars).
+
+        Args:
+            ivars_cols (list): A list of up to 4 integer values for ivars.
+
+        Raises:
+            AssertionError: If more than 4 ivars are provided or a value overflows.
+        """
         assert len(ivars_cols) <= 4, "Too many internal vars"
         for i, val in enumerate(ivars_cols):
             val = int(val)
-            assert val < 65536, "Internal variable overflow"
+            assert val < 65536, "Internal variable overflow (must be < 65536)"
             self.ivars[i] = val
 
     def set_auxconfig(self, aux_cols):
+        """
+        Sets the auxiliary output line configuration.
+
+        Args:
+            aux_cols (list): A list containing the auxline selection mode
+                             (e.g., ["normal"], ["delayed"]).
+
+        Raises:
+            AssertionError: If the auxline selection mode is undefined.
+        """
         part = aux_cols[0]
         assert part in self.auxselect.keys(), "Undefined auxline select"
         self.auxconfig = self.auxselect.get(part)
 
     def set_startaddress(self, aux_cols):
+        """
+        Sets the starting address for the pattern execution.
+
+        Args:
+            aux_cols (list): A list containing the start address (integer).
+
+        Raises:
+            AssertionError: If the start address is out of range (< 512).
+        """
         part = int(aux_cols[0])
-        assert part < 512, "Undefined auxline select"
+        assert part < 512, "Start address out of range (must be < 512)"
         self.start_address = part
 
 
     def set_auxline_polarity(self, aux_cols):
+        """
+        Sets the polarity for the auxiliary output line.
+
+        Args:
+            aux_cols (list): A list containing the polarity setting
+                             ("0", "1", "nim", or "ttl").
+
+        Raises:
+            AssertionError: If the polarity setting is undefined.
+        """
         part = aux_cols[0]
-        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout"
+        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout polarity"
         if part in ['0', 'nim']:
             self.auxline_pol = 0
         elif part in ['1', 'ttl']:
             self.auxline_pol = 1
 
     def set_external_input_polarity(self, aux_cols):
+        """
+        Sets the polarity for the external input level.
+
+        Args:
+            aux_cols (list): A list containing the polarity setting
+                             ("0", "1", "nim", or "ttl").
+
+        Raises:
+            AssertionError: If the polarity setting is undefined.
+        """
         part = aux_cols[0]
-        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined auxout"
+        assert part in ['0', '1', 'nim' ,'ttl'], "Undefined external input polarity"
         if part in ['0', 'nim']:
             self.level = 0
         elif part in ['1', 'ttl']:
@@ -605,34 +870,90 @@ class ControlBlock(Block):
 
 
     def set_DACconfig(self, dac_config_cols):
+        """
+        Sets the DAC configuration mode.
+
+        Args:
+            dac_config_cols (list): A list containing the DAC configuration mode
+                                    (e.g., ["static"], ["full"]).
+
+        Raises:
+            AssertionError: If the DAC configuration mode is undefined.
+        """
         part = dac_config_cols[0]
-        assert part in self.dacselect.keys(), f"Undefined DAC config"
+        assert part in self.dacselect.keys(), f"Undefined DAC config: {part}"
         self.dacconfig = self.dacselect.get(part)
 
     def set_staticDAC(self, dac_vals):
+        """
+        Sets the static values for the DAC channels.
+
+        These values are used if the `dacconfig` is 'static' or for DACs
+        not actively updated in other modes.
+
+        Args:
+            dac_vals (list): A list of strings defining DAC channel-value pairs
+                             (e.g., ["0:1.0V", "1:2000"]).
+        """
         line = ','.join(dac_vals)
-        dac_dict = self.dac_update(line)
+        dac_dict = self.dac_update(line) # Uses Block.dac_update
         for dac_chan, val in dac_dict.items():
             self.dacs[dac_chan] = val
 
     def set_patgenversion(self, patgen_ver_cols):
+        """
+        Sets the pattern generator version (64-bit or 128-bit).
+
+        This affects whether DAC functionality is available.
+
+        Args:
+            patgen_ver_cols (list): A list containing the version string
+                                    ("64bit" or "128bit").
+
+        Raises:
+            AssertionError: If the version string is invalid.
+        """
         part = patgen_ver_cols[0]
-        assert part in ['128bit', '64bit']
+        assert part in ['128bit', '64bit'], f"Invalid pattern generator version: {part}"
         if part == '128bit':
             self.patgen_128bit = True
         elif part == '64bit':
             self.patgen_128bit = False
 
     def process(self):
+        """
+        Main processing method for the ControlBlock.
+        Calls `process_control` to parse and apply settings.
+        """
         self.process_control()
 
 class SeqBlock(Block):
     """
-    Sequence block holds the sequence of steps to go through in a list of dict.
-    The keys of the dict are time(in ns), chan, use_ivar, [dac], comments.
-    Sequences has not much grammar involved.
+    Represents a 'sequence' block in the pattern generator.
+
+    A sequence block defines a series of steps, each with a duration,
+    active digital channels, optional DAC updates, and optional use of
+    internal variables (ivars) for looping/timing.
+
+    The first line of a sequence block, if it's a comment, is taken as
+    the sequence name.
+
+    Attributes:
+        block_type (str): Set to "sequence".
+        last_step_is_loop (bool): True if the last step in the sequence uses an ivar.
+        sequence_name (str): Name of the sequence (from the first comment line).
+        sequence (list): A list of dictionaries, where each dictionary represents
+                         a step in the sequence. Each step dict contains:
+                         'time' (int): Duration in ns.
+                         'chan' (list): Active digital channels.
+                         'use_ivar' (int or None): Index of ivar used (0-3), or None.
+                         'dac' (dict): DAC channel-value pairs.
+                         'comments' (str): Comments for the step.
     """
     def __init__(self, block_id, content):
+        """
+        Initializes a SeqBlock instance.
+        """
         super().__init__(block_id, content)
         self.block_type = "sequence"
         self.last_step_is_loop = False
@@ -640,6 +961,12 @@ class SeqBlock(Block):
         self.sequence = []
 
     def process_seq(self):
+        """
+        Parses the content of the sequence block to populate the `sequence` list.
+
+        The first line, if a comment, sets `self.sequence_name`.
+        Each subsequent line is parsed into a sequence step.
+        """
         for i, line in enumerate(self.parse_contents()):
             if i == 0 and self.is_comment(line):
                 self.sequence_name  = line[1:]
@@ -648,11 +975,19 @@ class SeqBlock(Block):
             self.add_seq_from_cols(cols)
 
     def add_seq_from_cols(self, cols):
+        """
+        Parses a list of columns (from a line) and adds a new step to `self.sequence`.
+
+        Extracts time, ivar usage, channel information, and DAC updates.
+
+        Args:
+            cols (list): A list of strings representing columns from a sequence line.
+        """
         time, cols = self.get_time(cols)
-        use_ivar, cols = self.get_ivar(cols)
-        chan, comments1, cols = self.get_chan(cols)
-        if cols:
-            dac, comments2, cols = self.get_dac(cols)
+        use_ivar, cols = self.get_ivar(cols) # Expects 'use_ivar <idx>' or nothing
+        chan, comments1, cols = self.get_chan(cols) # Expects 'chan <channels>'
+        if cols: # Remaining columns are assumed to be DAC info
+            dac, comments2, cols = self.get_dac(cols) # Expects 'dac <dac_updates>'
         else:
             dac = {}
             comments2 = ""
@@ -665,36 +1000,85 @@ class SeqBlock(Block):
 
 
     def get_ivar(self, cols):
-        '''
-            Get the internal variable index used for looping to increase time.
-            ivar goes from 0--3
-        '''
+        """
+        Extracts 'use_ivar' information from a list of columns.
+
+        Looks for "use_ivar <index>" pattern. The index must be 0, 1, 2, or 3.
+
+        Args:
+            cols (list): A list of strings (columns).
+
+        Returns:
+            tuple: A tuple containing:
+                - ivar_index (int or None): The ivar index (0-3) if found, else None.
+                - remaining_cols (list): The columns after 'use_ivar' parsing.
+
+        Raises:
+            AssertionError: If 'use_ivar' is present but the index is invalid.
+        """
         try:
             index = cols.index('use_ivar')
             ivar = int(cols[index+1])
-            cols.pop(index)
-            cols.pop(index)
-        except ValueError:
+            cols.pop(index) # remove 'use_ivar'
+            cols.pop(index) # remove index value
+        except ValueError: # 'use_ivar' not found
             ivar = None
-        assert ivar in [None, 0, 1, 2, 3]
+        assert ivar in [None, 0, 1, 2, 3], f"Invalid ivar index: {ivar}"
         return ivar, cols
 
     def process(self):
+        """
+        Main processing method for the SeqBlock.
+        Calls `process_seq` to parse the sequence definition.
+        """
         self.process_seq()
 
 class TriggerBlock(Block):
+    """
+    Represents a 'trigger' block in the pattern generator.
+
+    A trigger block defines conditions based on an external input,
+    event rate, or event count, and specifies subsequent blocks to
+    execute based on success or failure of the trigger condition.
+
+    The first line, if a comment, is taken as the trigger name.
+
+    Attributes:
+        block_type (str): Set to "trigger".
+        trigger_name (str): Name of the trigger (from the first comment line).
+        comment (list): List of comments found in the block.
+        chan (list): Digital channels to set when this block is active. (Set by `set_chan`)
+        dac (list): DAC updates when this block is active. (Set by `get_dac`)
+        rate (int): Trigger rate in Hz (if `rate` is defined).
+        count (int): Trigger count (if `count` is defined).
+        time_span (int): Time span in ns for count-based trigger.
+        success (str): Block ID to jump to on trigger success.
+        failure (str): Block ID to jump to on trigger failure.
+        external_input (int): External input channel (1-4) used. (Set by `set_exinput`)
+        rate_defined (bool): True if rate is used for triggering.
+        count_defined (bool): True if count is used for triggering.
+    """
     def __init__(self, block_id, content):
+        """
+        Initializes a TriggerBlock instance.
+        """
         super().__init__(block_id, content)
         self.block_type = "trigger"
         self.comment = []
-        self.chan = []
-        self.dac = []
+        self.chan = [] # Populated by set_chan
+        self.dac = []  # Populated by get_dac
         self.rate_defined = None
         self.count_defined = None
         self.trigger_grammar = ["extinput", "chan", "rate",
                 "count", "success", "failure", "dac"]
 
     def process_trigger(self):
+        """
+        Parses the content of the trigger block to set its attributes.
+
+        The first line, if a comment, sets `self.trigger_name`.
+        Each subsequent line is parsed based on keywords defined in `trigger_grammar`.
+        """
         for i, line in enumerate(self.parse_contents()):
             if self.is_comment(line) and i == 0:
                 self.trigger_name = line[1:]
@@ -705,83 +1089,173 @@ class TriggerBlock(Block):
             if self.is_comment(next_cols[-1]):
                 self.comment.append(next_cols[-1])
             self.assert_grammar(first_col, self.trigger_grammar)
-            if first_col == self.trigger_grammar[0]:
-                self.set_exinput(next_cols)
-            elif first_col == self.trigger_grammar[1]:
-                self.set_chan(next_cols)
-            elif first_col == self.trigger_grammar[2]:
+
+            if first_col == self.trigger_grammar[0]: # extinput
+                self.set_exinput(next_cols) # Inherited from Block
+            elif first_col == self.trigger_grammar[1]: # chan
+                self.set_chan(next_cols) # Inherited from Block, sets self.chan
+            elif first_col == self.trigger_grammar[2]: # rate
                 self.set_rate(next_cols)
-            elif first_col == self.trigger_grammar[3]:
+            elif first_col == self.trigger_grammar[3]: # count
                 self.set_count(next_cols)
-            elif first_col == self.trigger_grammar[4]:
+            elif first_col == self.trigger_grammar[4]: # success
                 self.set_success(next_cols)
-            elif first_col == self.trigger_grammar[5]:
+            elif first_col == self.trigger_grammar[5]: # failure
                 self.set_failure(next_cols)
             elif first_col == self.trigger_grammar[6]:
                 self.get_dac(next_cols)
 
     def set_rate(self, line):
+        """
+        Sets the trigger rate.
+
+        Args:
+            line (list): Columns defining the rate (e.g., ["100khz"]).
+
+        Raises:
+            Exception: If both rate and count are defined for the trigger.
+        """
         line = self.eat_space_between_units(line)
         for i, part in enumerate(line):
-            if i == 0: # Clock value and unit
+            if i == 0: # Rate value and unit
                 value, unit = UnitConverter.parse_value_unit(part)
                 self.rate = UnitConverter.freq(value, unit)
-        if self.rate_defined == None and self.count_defined == None:
+        if self.rate_defined is None and self.count_defined is None:
             self.rate_defined = True
         else:
-            raise Exception("Use only RATE or COUNT, not both")
+            raise Exception("Use only RATE or COUNT, not both, for a trigger block.")
 
     def set_count(self, line):
+        """
+        Sets the trigger count over a specified time span.
+
+        Args:
+            line (list): Columns defining count and time span
+                         (e.g., ["10", "in", "1ms"]).
+
+        Raises:
+            Exception: If both rate and count are defined for the trigger.
+            ValueError: If count value is not an integer.
+            AssertionError: If "in" keyword is missing.
+        """
         line = self.eat_space_between_units(line)
         for i, part in enumerate(line):
-            if i == 0:
+            if i == 0: # Count value
                 try:
                     self.count = int(part)
-                except ValueError as emsg:
-                    raise Exception("Count value should be integer, change units if necessary")
-            elif i == 1:
-                assert part == "in"
-            elif i == 2:
+                except ValueError:
+                    raise ValueError("Count value should be an integer.")
+            elif i == 1: # "in" keyword
+                assert part.lower() == "in", "Keyword 'in' missing for count definition."
+            elif i == 2: # Time span value and unit
                 value, unit = UnitConverter.parse_value_unit(part)
                 self.time_span = UnitConverter.time(value, unit)
 
-        if self.rate_defined == None and self.count_defined == None:
+        if self.rate_defined is None and self.count_defined is None:
             self.count_defined = True
         else:
-            raise Exception("Use only RATE or COUNT, not both")
+            raise Exception("Use only RATE or COUNT, not both, for a trigger block.")
 
 
     def set_success(self, outcome):
+        """
+        Sets the block ID to jump to on trigger success.
+
+        Args:
+            outcome (list): A list containing the block ID string.
+        """
         self.success = outcome[0]
 
     def set_failure(self, outcome):
+        """
+        Sets the block ID to jump to on trigger failure.
+
+        Args:
+            outcome (list): A list containing the block ID string.
+        """
         self.failure = outcome[0]
 
-    def check_consistent(self, success = None, failure = None):
+    def check_consistent(self, success=None, failure=None):
+        """
+        Checks if the provided success/failure logic matches the block's settings.
+
+        Used by the Translator to verify logic flow.
+
+        Args:
+            success (str, optional): Expected success block ID.
+            failure (str, optional): Expected failure block ID.
+
+        Raises:
+            AssertionError: If the provided logic does not match the block's.
+        """
         if success is not None:
-            assert success == self.success, "Success logic doesn't match Block"
+            assert success == self.success, \
+                f"Success logic mismatch: expected {self.success}, got {success}"
         if failure is not None:
-            assert failure == self.failure, "Failure logic doesn't match Block"
+            assert failure == self.failure, \
+                f"Failure logic mismatch: expected {self.failure}, got {failure}"
         return
 
     def process(self):
+        """
+        Main processing method for the TriggerBlock.
+        Calls `process_trigger` to parse the trigger definition.
+        """
         self.process_trigger()
 
 class LoopBlock(Block):
+    """
+    Represents a 'loop' block in the pattern generator.
+
+    A loop block uses an internal variable (ivar) as a counter to repeat
+    a sequence of other blocks or operations.
+
+    The first line, if a comment, is taken as the loop name.
+    The second line defines the ivar, its initial count, and optional
+    channel/DAC settings for each iteration.
+    Subsequent lines define the logic flow within the loop (connections to other blocks).
+
+    Attributes:
+        block_type (str): Set to "loop".
+        loop_name (str): Name of the loop (from the first comment line).
+        logic (list): Temporary list used by `match_logic` (inherited from MermaidParser via Block).
+                      Should be cleared or handled carefully if `match_logic` is called directly.
+        loop_logic (list): A list of logic connections (tuples) that form the body of the loop.
+                           Each tuple is like: (source_block_id, target_block_id, condition_str).
+        counter_var (int): Index of the ivar used for counting (0-3).
+        counter_val (int): Initial value for the ivar counter.
+        loop_set (dict): Contains settings for each loop iteration:
+                         'chan' (list): Active digital channels.
+                         'use_ivar' (int): The `counter_var`.
+                         'dac' (dict): DAC channel-value pairs.
+                         'comments' (str): Comments for the loop setup line.
+    """
     def __init__(self, block_id, content):
+        """
+        Initializes a LoopBlock instance.
+        """
         super().__init__(block_id, content)
         self.block_type = "loop"
-        self.logic = []
-        self.loop_logic = [] # List of list similar to parser.logic
+        self.loop_name = ""
+        self.logic = [] # Inherited from MermaidParser, used by self.match_logic
+        self.loop_logic = [] # Stores logic specific to this loop block
 
     def process_loop(self):
+        """
+        Parses the content of the loop block to set its attributes.
+
+        - First line (if comment): sets `self.loop_name`.
+        - Second line: parses ivar, count, and optional channel/DAC settings using `get_ivar` and `get_chan`/`get_dac`.
+        - Subsequent lines: parse as logic connections using `add_logic_from_line`.
+        """
         for i, line in enumerate(self.parse_contents()):
             if i == 0 and self.is_comment(line):
                 self.loop_name  = line[1:]
                 continue
-            if i == 1:
+            if i == 1: # ivar setup line
                 cols = self.get_cols(line)
-                self.counter_var, self.counter_val,cols = self.get_ivar(cols)
+                # get_ivar for LoopBlock is specific, not from SeqBlock
+                self.counter_var, self.counter_val, cols = self.get_ivar(cols)
                 chan, comments1, cols = self.get_chan(cols)
                 if cols:
                     dac, comments2, cols = self.get_dac(cols)
@@ -789,26 +1263,49 @@ class LoopBlock(Block):
                     dac = {}
                     comments2 = ""
                 self.loop_set={'chan' : chan,
-                              'use_ivar' : self.counter_var,
+                              'use_ivar' : self.counter_var, # Store which ivar is the counter
                               'dac' : dac,
                               'comments' : comments1 + comments2,
                               }
-            else:
+            else: # Logic lines within the loop
                 self.add_logic_from_line(line)
 
     def add_logic_from_line(self, line):
-        self.match_logic(line)
-        if len(self.logic)>0:
-            self.loop_logic.append(self.logic.pop())
+        """
+        Parses a line for a logic connection and adds it to `self.loop_logic`.
+
+        Uses `self.match_logic` (inherited from MermaidParser via Block) which
+        appends to `self.logic`. This method then moves the last added item
+        from `self.logic` to `self.loop_logic`.
+
+        Args:
+            line (str): The line defining a logic connection.
+        """
+        self.match_logic(line) # Appends to self.logic
+        if len(self.logic) > 0:
+            self.loop_logic.append(self.logic.pop()) # Move from self.logic to self.loop_logic
 
     def get_ivar(self, cols):
-        '''
-            Get the internal variable index used for looping.
-            ivar goes from 0--3
-        '''
-        assert cols[0].lower() == 'ivar', "Wrong keyword"
+        """
+        Extracts ivar index and count value for the loop counter.
+
+        Expects "ivar <index> <value>" followed by optional 'chan' or 'dac'.
+
+        Args:
+            cols (list): A list of strings (columns from the ivar setup line).
+
+        Returns:
+            tuple: A tuple containing:
+                - ivar_index (int): The ivar index (0-3).
+                - count_value (int): The initial count for the loop.
+                - remaining_cols (list): Columns after ivar parsing (for chan/dac).
+
+        Raises:
+            AssertionError: If keyword 'ivar' is missing, index is invalid, or value is out of bounds.
+        """
+        assert cols[0].lower() == 'ivar', "Wrong keyword, expected 'ivar' for loop setup."
         ivar = int(cols[1])
-        assert ivar in [0, 1, 2, 3], "Counter index must be 0,1,2 or 3"
+        assert ivar in [0, 1, 2, 3], "Counter ivar index must be 0, 1, 2, or 3."
         val = int(cols[2])
         assert (val > 0 and val < 65536), "Counter value out of bounds"
         try:
@@ -823,16 +1320,54 @@ class LoopBlock(Block):
         return ivar, val, cols
 
     def process(self):
+        """
+        Main processing method for the LoopBlock.
+        Calls `process_loop` to parse the loop definition.
+        """
         self.process_loop()
 
 class BranchBlock(Block):
+    """
+    Represents a 'branch' block in the pattern generator.
+
+    A branch block makes a decision based on an external input's level (high or low)
+    and jumps to a different block accordingly. It can also define a default
+    timestep, digital channels, and DAC settings to apply while waiting for the input.
+
+    The first line, if a comment, is taken as the branch name.
+
+    Attributes:
+        block_type (str): Set to "branch".
+        branch_name (str): Name of the branch (from the first comment line).
+        chan (list): Digital channels to set. (Populated by `get_chan` via `process_branch`)
+        dac (list): DAC updates. (Populated by `get_dac` via `process_branch`)
+        comment (list): List of comments found in the block. (Note: `self.comment` needs to be initialized in `__init__`)
+        external_input (int): External input channel (1-4) used. (Set by `set_exinput`)
+        high (str): Block ID to jump to if the external input is high.
+        low (str): Block ID to jump to if the external input is low.
+        timestep (int): Default time step in ns for this block, if specified.
+    """
     def __init__(self, block_id, content):
+        """
+        Initializes a BranchBlock instance.
+        """
         super().__init__(block_id, content)
         self.block_type = "branch"
-        self.chan = []
-        self.dac = []
+        self.branch_name = ""
+        self.chan = [] # Will be populated by get_chan if 'chan' keyword is present
+        self.dac = []  # Will be populated by get_dac if 'dac' keyword is present
+        self.comment = [] # Initialize comment list
         self.branch_grammar = ["extinput", "high", "low", "chan", "dac"]
+        # timestep might be set directly if a line is just a time value
+
     def process_branch(self):
+        """
+        Parses the content of the branch block to set its attributes.
+
+        The first line, if a comment, sets `self.branch_name`.
+        Each subsequent line is parsed based on keywords in `branch_grammar`
+        or as a direct time value.
+        """
         for i, line in enumerate(self.parse_contents()):
             if self.is_comment(line) and i == 0:
                 self.branch_name = line[1:]
@@ -848,7 +1383,7 @@ class BranchBlock(Block):
                     self.set_exinput(next_cols)
                 elif first_col == self.branch_grammar[1]:
                     self.set_high(next_cols)
-                elif first_col == self.branch_grammar[2]:
+                elif first_col == self.branch_grammar[2]: # low
                     self.set_low(next_cols)
                 elif first_col == self.branch_grammar[3]:
                     self.get_chan(next_cols)
@@ -861,21 +1396,50 @@ class BranchBlock(Block):
         pass
 
     def set_high(self, outcome):
+        """
+        Sets the block ID to jump to if the external input is high.
+
+        Args:
+            outcome (list): A list containing the block ID string.
+        """
         self.high = outcome[0]
 
     def set_low(self, outcome):
+        """
+        Sets the block ID to jump to if the external input is low.
+
+        Args:
+            outcome (list): A list containing the block ID string.
+        """
         self.low = outcome[0]
 
-    def check_consistent(self, high = None, low = None):
+    def check_consistent(self, high=None, low=None):
+        """
+        Checks if the provided high/low logic matches the block's settings.
+
+        Used by the Translator to verify logic flow.
+
+        Args:
+            high (str, optional): Expected 'high' block ID.
+            low (str, optional): Expected 'low' block ID.
+
+        Raises:
+            AssertionError: If the provided logic does not match the block's.
+        """
         if high is not None:
-            assert high == self.high, "High logic doesn't match Block"
+            assert high == self.high, \
+                f"High logic mismatch for branch {self.block_id}: expected {self.high}, got {high}"
         if low is not None:
-            assert low == self.low, "Low logic doesn't match Block"
+            assert low == self.low, \
+                f"Low logic mismatch for branch {self.block_id}: expected {self.low}, got {low}"
         return
 
     def process(self):
+        """
+        Main processing method for the BranchBlock.
+        Calls `process_branch` to parse the branch definition.
+        """
         self.process_branch()
-    pass
 
 class BlockFactory:
     """
@@ -886,14 +1450,40 @@ class BlockFactory:
 
     @classmethod
     def register(cls, prefix, block_cls):
+        """
+        Registers a block class with a given prefix.
+
+        The factory uses these registered classes to create block instances.
+        The prefix is matched against the beginning of a block's ID (case-insensitive).
+
+        Args:
+            prefix (str): The prefix string to associate with the block class.
+            block_cls (type): The block class (e.g., `ControlBlock`, `SeqBlock`).
+        """
         cls._registry[prefix.lower()] = block_cls
 
     @classmethod
     def create(cls, block_id, content):
+        """
+        Creates a block instance based on its ID.
+
+        It iterates through the registered block types and instantiates the
+        first one whose prefix matches the beginning of the `block_id`.
+
+        Args:
+            block_id (str): The unique identifier of the block.
+            content (str): The raw content of the block.
+
+        Returns:
+            Block: An instance of the appropriate subclass of `Block`.
+
+        Raises:
+            NotImplementedError: If no registered block type matches the `block_id`.
+        """
         for prefix, block_cls in cls._registry.items():
             if block_id.lower().startswith(prefix):
                 return block_cls(block_id, content)
-        raise NotImplementedError(f"{block_id} not implemented.")
+        raise NotImplementedError(f"Block type for ID '{block_id}' not implemented or registered.")
 
 
 BlockFactory.register("control", ControlBlock)
@@ -903,38 +1493,86 @@ BlockFactory.register("loop", LoopBlock)
 BlockFactory.register("branch", BranchBlock)
 
 class Translator:
+    """
+    Translates parsed Mermaid-like block definitions into a hardware-specific
+    pattern file format (.dpatt).
+
+    The Translator takes a dictionary of parsed blocks and a list of logic
+    connections, processes them, and generates the output file content.
+    It handles:
+    - Processing configuration from the 'control' block.
+    - Preprocessing all other blocks to determine their size in pattern rows.
+    - Assigning start and end row addresses to each block based on logic.
+    - Generating the 'writew' lines for each block's functionality.
+    - Writing the final .dpatt file.
+    """
     def __init__(self, blocks, logic, filein, fileout, hex=True, verbose=False):
-        self.blocks = {}
+        """
+        Initializes the Translator.
+
+        Args:
+            blocks (dict): Dictionary of block_id to raw block content string,
+                           as returned by MermaidParser.get_blocks().
+            logic (list): List of logic connection tuples (source_id, target_id, condition_str),
+                          as returned by MermaidParser.get_logic().
+            filein (str): Name of the input Mermaid-like file (for logging).
+            fileout (str): Path to the output .dpatt file.
+            hex (bool): If True, output numerical values in hexadecimal format (except time).
+            verbose (bool): If True, include more detailed comments in the output file.
+        """
+        self.blocks = {} # This will store processed Block objects
         self.hex = hex
         self.verbose = verbose
-        self.logic = logic
+        self.logic = logic # Overall program flow logic
         self.config_bits = 0
         self.param_register = []
-        self.new_dpatt_str = ""
-        self.dpatt_str = f"#This file was generated by gen3.py using {filein}\n\n"
+        self.new_dpatt_str = "" # String for the main pattern program
+        self.dpatt_str = f"#This file was generated by gen3.py using {filein}\n\n" # Header for .dpatt
         self.fileout = fileout
+
+        # Create and process each block object
         for key, value in blocks.items():
-            block = BlockFactory.create(key, value)
-            self.blocks[key] = block
-            block.process()
-        PARAMETERWRITE = 8; ADDRESSRESET=4; TABLERESET=1;
-        self.process_config()
-        self.write_config(PARAMETERWRITE+ADDRESSRESET+TABLERESET)
-        self.write_param()
-        self.preprocess_blocks()
-        self.process_logic()
-        self.write_out()
+            block_obj = BlockFactory.create(key, value)
+            self.blocks[key] = block_obj # Store the Block object instance
+            block_obj.process() # Call the block's specific process() method
+
+        # Default configuration bits for initial setup
+        PARAMETERWRITE = 8 # Bit 3: Write to parameter RAM
+        ADDRESSRESET = 4   # Bit 2: Reset address counter on jump
+        TABLERESET = 1     # Bit 0: Reset table pointer
+
+        self.process_config() # Process the 'control' block for global settings
+        self.write_config(PARAMETERWRITE + ADDRESSRESET + TABLERESET) # Write initial config word
+        self.write_param() # Write parameter register values
+
+        self.preprocess_blocks() # Calculate row requirements and assign addresses
+        self.process_logic() # Generate the 'writew' lines for the pattern
+        self.write_out() # Write everything to the output file
 
     def write_out(self):
+        """
+        Writes the generated .dpatt content to the output file.
+        Appends a "run;" command at the end.
+        """
         with open(self.fileout, 'w') as f:
-            f.write(self.dpatt_str)
-            f.write(self.new_dpatt_str)
+            f.write(self.dpatt_str) # Header, config, params
+            f.write(self.new_dpatt_str) # Main pattern program
             f.write("\n\nrun; #Run sequence")
 
     def preprocess_blocks(self):
-        # Go through blocks and determine rows needed
-        for block in self.blocks.values():
-            if block.block_type == 'control':
+        """
+        Preprocesses all blocks to determine their required number of pattern rows
+        and assigns `first_row` and `last_row` attributes to each block.
+
+        This involves:
+        1. Calculating `num_rows` for each non-control block via `determine_num_rows`.
+        2. Iterating through the main program `logic` to lay out blocks sequentially
+           in memory, assigning `first_row` and `last_row` for each block and
+           any nested blocks (like within a loop).
+        """
+        # Go through blocks and determine rows needed for each
+        for block_id, block_obj in self.blocks.items():
+            if block_obj.block_type == 'control':
                 continue
             else:
                 self.determine_num_rows(block)
@@ -982,6 +1620,14 @@ class Translator:
                     block_end.last_row = count - 1
 
     def determine_num_rows(self, block):
+        """
+        Determines the number of hardware pattern rows required for a given block.
+
+        Calls the appropriate `preprocess_<block_type>` method.
+
+        Args:
+            block (Block): The block object whose `num_rows` attribute will be set.
+        """
         if block.block_type == 'sequence':
             self.preprocess_seq(block)
         elif block.block_type == 'trigger':
@@ -991,7 +1637,7 @@ class Translator:
         elif block.block_type == 'branch':
             self.preprocess_branch(block)
         else:
-            assert "Unknown block type"
+            raise AssertionError(f"Unknown block type for row determination: {block.block_type}")
 
     def preprocess_branch(self, block):
         '''
@@ -1010,30 +1656,54 @@ class Translator:
                 block.num_rows = 2
 
     def preprocess_trigger(self, block):
-        '''
-            Reserve maximum 5 rows for external trigger.
-            If ivar ( < 65us time_span) not needed steps 2 and 3 can be squashed
-            1) Load evar (and ivar if needed)
-            2) Decrement ivar counter
-            3) Check non-zero ivar with address
-            4) Check non-zero evar with address
-            5) evar zero address condition
-        '''
+        """
+        Sets `num_rows` for a TriggerBlock.
+        Trigger blocks are allocated a fixed number of rows (currently 5)
+        to accommodate various operations like loading variables, decrementing,
+        and checking conditions.
+
+        The 5 rows are typically for:
+        1. Load evar (and ivar if needed for long time_span).
+        2. Decrement ivar counter (if ivar used).
+        3. Check non-zero ivar and branch (if ivar used).
+        4. Check non-zero evar and branch to failure_row.
+        5. Branch to success_row (if evar was zero).
+
+        Args:
+            block (TriggerBlock): The trigger block to process.
+        """
         block.num_rows = 5
 
     def preprocess_loop(self, block):
-        '''
-            Reserve 4 rows for internal loops.
-            1) Load ivar
-            2) Decrement ivar counter
-            3) Check non-zero with address
-            4) ivar zero address condition
-        '''
-        block.num_rows = 4
+        """
+        Sets `num_rows` for a LoopBlock.
+        Loop blocks are allocated a fixed number of rows (currently 4)
+        for their control structure, plus rows for blocks inside the loop.
+        The 4 rows are for:
+        1. Load ivar (counter).
+        2. Decrement ivar.
+        3. Check ivar non-zero and branch to loop start.
+        4. Branch to loop exit (when ivar is zero).
+        Rows for blocks *inside* the loop are accounted for during the main
+        `preprocess_blocks` logic traversal.
+
+        Args:
+            block (LoopBlock): The loop block to process.
+        """
+        # The num_rows for a loop block itself (control structure)
+        block.num_rows = 4 # For load, decrement, check, and exit branching.
+        # Rows for blocks *inside* the loop are added during the main preprocess_blocks logic traversal.
 
     def preprocess_seq(self, block):
+        """
+        Calculates `num_rows` for a SeqBlock based on its sequence steps.
+        Each step contributes rows depending on its duration and use of ivars.
+
+        Args:
+            block (SeqBlock): The sequence block to process.
+        """
         rows = 0
-        seq_len = len(block.sequence)-1
+        seq_len = len(block.sequence) - 1
         for j, step in enumerate(block.sequence):
             time = step['time']
             i = step['use_ivar']
@@ -1539,7 +2209,13 @@ class Translator:
 
     def split_chan_dig_dac(self, channels):
         """
-        Splits the channels set into digital part and dac parts
+        Splits a channels dictionary into digital channel list and DAC settings dictionary.
+
+        Args:
+            channels_dict (dict): A dictionary like {'chan': [0,1], 'dac': {0:100}}.
+
+        Returns:
+            tuple: (digital_channels_list, dac_settings_dict)
         """
         return channels['chan'], channels['dac']
 
@@ -1595,69 +2271,132 @@ class Translator:
 
     def writew_line(self, channels, time, address, comment=None):
         """
-        Centralizes all 'writew' line construction. Just pass the raw values and
-        this will call the helpers and return the correctly formatted line.
+        Constructs a complete 'writew' line string for the pattern file.
+
+        Args:
+            channels (dict): Dictionary with 'chan' (list of digital channels)
+                             and 'dac' (dict of DAC updates).
+            time (int): Time duration for this line in nanoseconds.
+            address (dict or int): Address/special command.
+                                   If dict: {'address': val, 'special': val, 'cond': val}.
+                                   If int: direct address value.
+            comment (str, optional): Comment for this line.
+
+        Returns:
+            str: The fully formatted 'writew' line string, including row number comment.
         """
-        dig_chan, dac_chan = self.split_chan_dig_dac(channels)
-        dig_chan_str = self.dig_chan_write(dig_chan)
-        time_str = self.time_write(time)
-        address_str = self.address_write(**address) if isinstance(address, dict) else self.address_write(address)
-        row_num_str = self.row_num_write(comment=comment)
+        dig_chans, dac_updates = self.split_chan_dig_dac(channels)
+
+        dig_chan_str = self.dig_chan_write(dig_chans)
+        time_str = self.time_write(time) # Converts ns to hardware time value
+
+        if isinstance(address, dict):
+            address_str = self.address_write(**address)
+        else: # Assuming it's a direct address integer or None
+            address_str = self.address_write(address=address)
+
+        row_num_comment_str = self.row_num_write(comment=comment)
+
+        dac_chan_str = ""
         if self.patgen_128bit:
-            dac_chan_str = self.dac_chan_write(dac_chan)
-        else:
-            dac_chan_str = ""
-        return f"writew {dig_chan_str}{dac_chan_str}{time_str}{address_str}{row_num_str}\n"
+            dac_chan_str = self.dac_chan_write(dac_updates)
+
+        return f"writew {dig_chan_str}{dac_chan_str}{time_str}{address_str}{row_num_comment_str}\n"
 
     def process_config(self):
-        b = self.blocks['control']
-        self.timestep = b.timestep
-        self.maxtimestep = self.timestep*65536
-        if b.patgen_128bit:
+        """
+        Processes the 'control' block to set up global translator parameters
+        like timestep, variable values, and hardware configuration bits.
+        """
+        control_block = self.blocks.get('control')
+        if not control_block:
+            raise ValueError("A 'control' block is required but not found.")
+
+        self.timestep = control_block.timestep # Base hardware timestep in ns
+        self.maxtimestep = self.timestep * 65536 # Max duration of a single pattern line
+        self.ivars = control_block.ivars # Initial values for internal variables
+        self.evars = control_block.evars # Initial values for external variables
+
+        self.config_bits = 0 # Reset global config bits
+
+        if control_block.patgen_128bit:
             self.patgen_128bit = True
-            self.dacconfig = b.dacconfig
-            self.config_bits += b.dacconfig<<11 #bits 12:11
-            self.config_bits += b.auxline_pol<<10 # bit 10
-            self.param_register = [b.start_address, b.inthreshold,
-                                  *b.evars, *b.ivars, *b.dacs]
+            self.dacconfig = control_block.dacconfig # DAC mode (0-3)
+            self.config_bits |= (self.dacconfig << 11)  # Bits 12:11 for DAC config
+            self.config_bits |= (control_block.auxline_pol << 10) # Bit 10 for AuxOut polarity
+            # Parameter register for 128-bit: startAddr, intThreshold, evars[4], ivars[4], dacs[8]
+            self.param_register = [control_block.start_address, control_block.inthreshold,
+                                  *control_block.evars, *control_block.ivars, *control_block.dacs]
         else:
             self.patgen_128bit = False
-            self.param_register = [b.start_address, *b.evars, *b.ivars]
-        self.config_bits += b.clock_select<<6 # bit 7:6
-        self.config_bits += b.auxconfig<<4 # bit 5:4
-        self.config_bits += b.level<<1 # bit 1
-        self.ivars = b.ivars
-        self.evars = b.evars
+            # Parameter register for 64-bit: startAddr, evars[4], ivars[4]
+            # (inthreshold and dacs are not applicable or handled differently)
+            self.param_register = [control_block.start_address, # Assuming inthreshold is not in 64b params
+                                  *control_block.evars, *control_block.ivars]
 
-    def write_config(self, other_config = 0):
-        '''
-        Other config bits that are not set via Control block
-        bits 9:8 controlling table hooks
-        bit 3 controlling RAM of writew Pattern or Params
-        bit 2 controlling address reset during direct/conditional jumps
-        bit 0 controlling tablereset
-        '''
-        config_bits = self.config_bits + other_config
-        self.dpatt_str += "config " + self.w16(config_bits, last=True) + "\n"
+
+        self.config_bits |= (control_block.clock_select << 6) # Bits 7:6 for Clock Select
+        self.config_bits |= (control_block.auxconfig << 4)    # Bits 5:4 for AuxOut Config
+        self.config_bits |= (control_block.level << 1)        # Bit 1 for Input Level (NIM/TTL)
+
+
+    def write_config(self, other_hardware_config_flags=0):
+        """
+        Writes the 'config' line to the .dpatt string.
+
+        Combines configuration derived from the 'control' block with other
+        hardware-specific flags.
+
+        Args:
+            other_hardware_config_flags (int): Additional hardware config bits
+                                               (e.g., for table hooks, RAM target).
+        """
+        # Bit definitions for other_hardware_config_flags (example values from original):
+        # PARAMETERWRITE = 8 (Bit 3: target RAM for writew is Params, else Pattern)
+        # ADDRESSRESET = 4   (Bit 2: reset address on jumps)
+        # TABLERESET = 1     (Bit 0: reset table pointer)
+        # Bits 9:8 for table hooks are not explicitly set here, assumed 0 or part of other_flags.
+
+        final_config_bits = self.config_bits | other_hardware_config_flags
+        self.dpatt_str += "config " + self.w16(final_config_bits, last=True) + "\n"
 
     def write_param(self):
-        self.dpatt_str += "writew "
-        end = len(self.param_register)-1
+        """
+        Writes the initial parameter values to the .dpatt string using 'writew'.
+        These are loaded into the hardware's parameter RAM.
+        """
+        self.dpatt_str += "writew " # Start of the parameter write line
+        num_params = len(self.param_register)
         for i, val in enumerate(self.param_register):
-            if i == end:
-                self.dpatt_str += self.w16(val,last=True, hex=False)
-            else:
-                self.dpatt_str += self.w16(val, hex=False)
+            is_last_param = (i == num_params - 1)
+            # Parameters are typically written in decimal, regardless of global 'hex' mode.
+            self.dpatt_str += self.w16(val, last=is_last_param, hex=False)
+        self.dpatt_str += "\n" # End the writew line for parameters
 
-    def w16(self, num, last = False, hex = None):
+    def w16(self, num, last=False, hex=None):
+        """
+        Formats a number as a 16-bit word string, optionally in hexadecimal.
+
+        Args:
+            num (int): The number to format (must be 0 <= num < 65536).
+            last (bool): If True, append ';' as terminator, else ','.
+            hex (bool, optional): If True, format as hex. Defaults to `self.hex`.
+
+        Returns:
+            str: The formatted 16-bit word string.
+
+        Raises:
+            AssertionError: If `num` is out of 16-bit range.
+        """
         if hex is None:
-            hex = self.hex
-        assert num < 65536 and num >-1
-        term = ";" if last else ","
+            hex = self.hex # Use instance's default hex mode if not specified
+        assert 0 <= num < 65536, f"Number {num} out of 16-bit range [0, 65535]."
+
+        terminator = ";" if last else ","
         if hex:
-            return f"{num:#06x}" + term
+            return f"{num:#06x}{terminator}" # Format as 0x####
         else:
-            return str(num) + term
+            return f"{num}{terminator}"
 
 # Example usage
 if __name__ == "__main__":
