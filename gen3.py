@@ -1368,11 +1368,17 @@ class BranchBlock(Block):
                 self.branch_name = line[1:].strip()
                 continue
             cols = self.get_cols(line)
-            if len(cols)>1:
-                first_col = cols[0]
+            if not cols: # Skip empty lines
+                continue
+
+            if len(cols) > 1 or cols[0].lower() in self.branch_grammar: # Keyword-based line
+                first_col = cols[0].lower()
                 next_cols = cols[1:]
-                if self.is_comment(next_cols[-1]):
-                    self.comment.append(next_cols[-1])
+
+                # Check for comments at the end of next_cols
+                if next_cols and self.is_comment(next_cols[-1]):
+                    self.comment.append(next_cols.pop()) # Add comment and remove from next_cols
+
                 self.assert_grammar(first_col, self.branch_grammar)
 
                 if first_col == self.branch_grammar[0]: # extinput
@@ -1381,15 +1387,25 @@ class BranchBlock(Block):
                     self.set_high(next_cols)
                 elif first_col == self.branch_grammar[2]: # low
                     self.set_low(next_cols)
-                elif first_col == self.branch_grammar[3]:
-                    self.get_chan(next_cols)
-                elif first_col == self.branch_grammar[4]:
-                    self.get_dac(next_cols)
-                else:
+                elif first_col == self.branch_grammar[3]: # chan
+                    self.set_chan(cols) # Pass original cols
+                elif first_col == self.branch_grammar[4]: # dac
+                    self.set_dac(cols) # Pass original cols
+                # If a line starts with a keyword not in the grammar but isn't just a time value,
+                # it might be an error or unhandled case. Current assert_grammar would catch it.
+            elif len(cols) == 1 or (len(cols) == 2 and UnitConverter.time_units.get(cols[1].lower())):
+                # Assumed to be a time definition line
+                # e.g. "10ns" or "10 ns"
+                try:
                     self.timestep, _ = self.get_time(cols)
+                except ValueError:
+                    # This might occur if the line is not a valid time format
+                    # or an unrecognized single-word command.
+                    raise ValueError(f"Invalid line in branch block: '{line}'. Expected command or time value.")
             else:
-                self.timestep, _ = self.get_time(cols)
-        pass
+                # Fallback for lines that are not empty, not keyword-based, and not time.
+                # This case should ideally not be reached if grammar is complete.
+                raise ValueError(f"Unrecognized line format in branch block: '{line}'")
 
     def set_high(self, outcome):
         """
