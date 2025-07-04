@@ -570,7 +570,7 @@ class Block(MermaidParser):
         Args:
             line (list): A list of strings representing parts of a DAC command.
         """
-        pass
+        self.dac = self.dac_update(line)
 
     def get_chan(self, cols):
         """
@@ -969,7 +969,7 @@ class SeqBlock(Block):
         """
         for i, line in enumerate(self.parse_contents()):
             if i == 0 and self.is_comment(line):
-                self.sequence_name  = line[1:]
+                self.sequence_name  = line[1:].strip() # Get name from comment
                 continue
             cols = self.get_cols(line)
             self.add_seq_from_cols(cols)
@@ -995,7 +995,7 @@ class SeqBlock(Block):
                               'chan' : chan,
                               'use_ivar' : use_ivar,
                               'dac' : dac,
-                              'comments' : comments1 + comments2,
+                              'comments' : (comments1 + " " + comments2).strip(),
                               })
 
 
@@ -1064,6 +1064,7 @@ class TriggerBlock(Block):
         """
         super().__init__(block_id, content)
         self.block_type = "trigger"
+        self.trigger_name = ""
         self.comment = []
         self.chan = [] # Populated by set_chan
         self.dac = []  # Populated by get_dac
@@ -1081,7 +1082,7 @@ class TriggerBlock(Block):
         """
         for i, line in enumerate(self.parse_contents()):
             if self.is_comment(line) and i == 0:
-                self.trigger_name = line[1:]
+                self.trigger_name = line[1:].strip()
                 continue
             cols = self.get_cols(line)
             first_col = cols[0]
@@ -1102,8 +1103,8 @@ class TriggerBlock(Block):
                 self.set_success(next_cols)
             elif first_col == self.trigger_grammar[5]: # failure
                 self.set_failure(next_cols)
-            elif first_col == self.trigger_grammar[6]:
-                self.get_dac(next_cols)
+            elif first_col == self.trigger_grammar[6]: # dac
+                self.dac = self.set_dac(next_cols) # Inherited from Block
 
     def set_rate(self, line):
         """
@@ -1250,7 +1251,7 @@ class LoopBlock(Block):
         """
         for i, line in enumerate(self.parse_contents()):
             if i == 0 and self.is_comment(line):
-                self.loop_name  = line[1:]
+                self.loop_name  = line[1:].strip()
                 continue
             if i == 1: # ivar setup line
                 cols = self.get_cols(line)
@@ -1265,7 +1266,7 @@ class LoopBlock(Block):
                 self.loop_set={'chan' : chan,
                               'use_ivar' : self.counter_var, # Store which ivar is the counter
                               'dac' : dac,
-                              'comments' : comments1 + comments2,
+                              'comments' : (comments1 + " " + comments2).strip(),
                               }
             else: # Logic lines within the loop
                 self.add_logic_from_line(line)
@@ -1307,17 +1308,11 @@ class LoopBlock(Block):
         ivar = int(cols[1])
         assert ivar in [0, 1, 2, 3], "Counter ivar index must be 0, 1, 2, or 3."
         val = int(cols[2])
-        assert (val > 0 and val < 65536), "Counter value out of bounds"
-        try:
-            chan_idx = cols.index('chan')
-            line = ','.join(cols[1:chan_idx])
-            comments = ''
-            cols = cols[chan_idx:]
-        except ValueError:
-            line = ','.join(cols[1:]) # without chan,
-            cols = []
-        line, comments = self.split_comments(line)
-        return ivar, val, cols
+        assert (val > 0 and val < 65536), "Counter value out of bounds (1-65535)."
+
+        # Prepare remaining columns for further parsing (chan/dac)
+        remaining_cols = cols[3:]
+        return ivar, val, remaining_cols
 
     def process(self):
         """
@@ -1370,7 +1365,7 @@ class BranchBlock(Block):
         """
         for i, line in enumerate(self.parse_contents()):
             if self.is_comment(line) and i == 0:
-                self.branch_name = line[1:]
+                self.branch_name = line[1:].strip()
                 continue
             cols = self.get_cols(line)
             if len(cols)>1:
@@ -1379,9 +1374,10 @@ class BranchBlock(Block):
                 if self.is_comment(next_cols[-1]):
                     self.comment.append(next_cols[-1])
                 self.assert_grammar(first_col, self.branch_grammar)
-                if first_col == self.branch_grammar[0]:
-                    self.set_exinput(next_cols)
-                elif first_col == self.branch_grammar[1]:
+
+                if first_col == self.branch_grammar[0]: # extinput
+                    self.set_exinput(next_cols) # Inherited from Block
+                elif first_col == self.branch_grammar[1]: # high
                     self.set_high(next_cols)
                 elif first_col == self.branch_grammar[2]: # low
                     self.set_low(next_cols)
