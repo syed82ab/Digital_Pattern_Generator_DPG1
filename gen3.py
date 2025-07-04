@@ -1087,8 +1087,9 @@ class TriggerBlock(Block):
             cols = self.get_cols(line)
             first_col = cols[0]
             next_cols = cols[1:]
-            if self.is_comment(next_cols[-1]):
+            if next_cols and self.is_comment(next_cols[-1]): # Check if last part of next_cols is a comment
                 self.comment.append(next_cols[-1])
+                # Potentially remove comment from next_cols if it's processed separately by setters
             self.assert_grammar(first_col, self.trigger_grammar)
 
             if first_col == self.trigger_grammar[0]: # extinput
@@ -2149,193 +2150,371 @@ class Translator:
         return time_per_loop_line, load_instr_time
 
 
-    def process_trigger_logic(self, start, end, condition):
-        ivar_needed = False
-        ivar_chan = None
-        #Check consistency of blocks and logic and
-        # Define success and failure row address.
+    def process_trigger_logic(self, trigger_block, end_block_unused, condition_str):
+        """
+        Generates 'writew' lines for a TriggerBlock.
 
-        if condition[1:-1] == 'success':
-            test_success = end.block_id
-            test_failure = start.failure
-        elif condition[1:-1] == 'failure':
-            test_failure = end.block_id
-            test_success = start.success
-        start.check_consistent(success = test_success, failure = test_failure)
-        if test_success == 'loop_check':
-            success_row = end.loop_check_row
-        else:
-            success_row = self.blocks[test_success].first_row
-        if test_failure == 'loop_check':
-            failure_row = end.loop_check_row
-        else:
-            failure_row = self.blocks[test_failure].first_row
+        Args:
+            trigger_block (TriggerBlock): The trigger block to process.
+            end_block_unused: Not directly used, as trigger defines its own success/failure targets.
+            condition_str (str): The condition string from the main logic (e.g. "|success|")
+                                 that led to this trigger block. It determines which path
+                                 (success/failure) of the *previous* block is being connected.
+                                 The trigger block itself has .success and .failure attributes.
+        """
+        ivar_needed_for_timespan = False
+        ivar_chan_for_timespan = None
 
-        #Determine if ivar is needed based. We set a max of r15 lines
-        if start.time_span/self.maxtimestep > 1:
-            ivar_needed = True
-            ivar_chan, rows = self.find_good_ivar(start.time_span, 2 )
-        self.new_dpatt_str += "\n#" + start.block_id + "  " + \
-                              start.trigger_name +  "\n"
-        #Start writing the word
-        self.trigger_write(time_span = start.time_span,
-                ivar_needed = ivar_needed,
-                ivar_chan = ivar_chan,
-                evar_chan = start.external_input-1,
-                dig_chan = {'chan': start.chan, 'dac': start.dac},
-                failure_row = failure_row,
-                success_row = success_row,
-                num_rows = start.num_rows)
-        start.written = True
+        # Determine actual success and failure target blocks based on the incoming condition
+        # The condition_str refers to how we *entered* this trigger block,
+        # but the trigger block itself has its own defined success/failure targets.
+        # This part of original code seems to re-interpret condition_str for trigger's own logic.
+        # This needs clarification: is condition_str defining the trigger's behavior or how we got here?
+        # Assuming condition_str from main logic (e.g. blockA --> |success| triggerB) means
+        # that if blockA's "success" path is taken, it leads to triggerB.
+        # TriggerB then has its own internal success/failure.
+
+        # The original code used end_block.block_id for one path.
+        # Let's use the trigger_block's own success/failure attributes.
+        success_target_id = trigger_block.success
+        failure_target_id = trigger_block.failure
+
+        # Handle 'loop_check' as a special target for success/failure, meaning jump to loop's check mechanism
+        if success_target_id == 'loop_check':
+            # This implies 'end_block_unused' (if it was the loop) should have 'loop_check_row'
+            # This needs careful wiring: the 'loop_check_row' must be known.
+            # Let's assume the target Block object (if 'loop_check') has this attribute.
+            # This is a bit of a hack; ideally, targets are always block IDs or direct addresses.
+            # The 'end_block' passed might be the loop that contains this trigger.
+            # For now, if end_block_unused is the loop and has loop_check_row:
+            if hasattr(end_block_unused, 'loop_check_row'): # end_block_unused might be the loop object.
+                 success_target_row = end_block_unused.loop_check_row
+            else: # Fallback or error: loop_check target needs a defined row
+                 raise ValueError(f"Trigger '{trigger_block.block_id}' success target 'loop_check' but no loop_check_row found.")
+        else:
+            success_target_row = self.blocks[success_target_id].first_row
+
+        if failure_target_id == 'loop_check':
+            if hasattr(end_block_unused, 'loop_check_row'):
+                failure_target_row = end_block_unused.loop_check_row
+            else:
+                 raise ValueError(f"Trigger '{trigger_block.block_id}' failure target 'loop_check' but no loop_check_row found.")
+        else:
+            failure_target_row = self.blocks[failure_target_id].first_row
+
+        trigger_block.check_consistent(success=success_target_id, failure=failure_target_id)
+
+
+        # Determine if an ivar is needed for the trigger's time_span (if count-based)
+        if trigger_block.count_defined and trigger_block.time_span / self.maxtimestep > 1:
+            ivar_needed_for_timespan = True
+            # find_good_ivar tries to find an ivar that can cover the time_span with minimal rows.
+            ivar_chan_for_timespan, _ = self.find_good_ivar(trigger_block.time_span, max_lines_for_loop=2) # Max_lines for dec+check
+
+        self.new_dpatt_str += f"\n# Trigger Block: {trigger_block.block_id} ({trigger_block.trigger_name})\n"
+
+        self.trigger_write(
+            time_span=trigger_block.time_span if trigger_block.count_defined else self.timestep, # Default to min time if rate-based
+            ivar_needed=ivar_needed_for_timespan,
+            ivar_chan=ivar_chan_for_timespan,
+            evar_chan=trigger_block.external_input - 1, # Convert 1-4 to 0-3 for hardware
+            dig_chan={'chan': trigger_block.chan, 'dac': trigger_block.dac}, # trigger_block.dac is a list of dicts
+            failure_row=failure_target_row,
+            success_row=success_target_row,
+            num_rows=trigger_block.num_rows # For debug/consistency, actual lines written by trigger_write
+        )
+        trigger_block.written = True
 
     def trigger_write(self, time_span, ivar_needed, ivar_chan, evar_chan,
             dig_chan, failure_row, success_row, num_rows):
-        count = 0
+        """
+        Writes the sequence of 'writew' lines for a trigger's operation.
+        This is a low-level helper that constructs the hardware commands.
+
+        Args:
+            time_span (int): Duration for count-based trigger, or base timestep.
+            ivar_needed (bool): If an ivar is used for the time_span.
+            ivar_chan (int): Index of ivar used for time_span (0-3), if any.
+            evar_chan (int): Index of external variable to check (0-3).
+            dig_chan (dict): Digital channels and DAC settings.
+            failure_row (int): Pattern row to jump to if evar is non-zero (trigger fail).
+            success_row (int): Pattern row to jump to if evar is zero (trigger success).
+            num_rows (int): Expected number of rows (mostly for consistency check).
+        """
+
+        # --- Command setup ---
+        # evar load: (1<<12) | (1 << evar_idx)
+        # ivar load: (1<<12) | ((1 << ivar_idx) << 4)
+        # ivar dec : (1<<12) | ((1 << ivar_idx) << 8)
+        # ivar check nonzero: ((12 + ivar_idx) << 12) + target_addr
+        # evar check nonzero: ((8 + evar_idx) << 12) + target_addr (failure)
+
+        special_load_evar_only = (1 << 12) | (1 << evar_chan)
+        time_span_loop_line = 0 # Time for each line within ivar loop for timespan
+
         if ivar_needed:
-            special_load = (1<<12) + ((2**ivar_chan)<<4) + (2**evar_chan)
-            special_dec = (1<<12) + ((2**ivar_chan)<<8)
-            special_icheck = ((12 + ivar_chan)<<12)
-            time_span_loop = time_span//self.ivars[ivar_chan]
+            # Load both evar and ivar for timespan
+            special_load_cmd = special_load_evar_only | ((1 << ivar_chan) << 4)
+            special_dec_ivar_cmd = (1 << 12) | ((1 << ivar_chan) << 8)
+            special_check_ivar_cmd = ((12 + ivar_chan) << 12)
+            # Distribute time_span over ivar loops (assuming 2 lines: dec, check per loop)
+            time_span_loop_line = time_span // (self.ivars[ivar_chan] * 2) # Approximate
+            if time_span_loop_line == 0: time_span_loop_line = self.timestep # Ensure minimum
         else:
-            special_load = (1<<12) + (2**evar_chan)
-            special_dec = None
-        special_echeck = ((8 + evar_chan)<<12)
-        special_echeck_address_failure = failure_row
-        special_echeck_address_success = success_row
+            special_load_cmd = special_load_evar_only
+            # No ivar specific commands needed beyond load if not ivar_needed
 
-        # load evar
+        special_check_evar_nonzero_cmd = ((8 + evar_chan) << 12)
+
+        # --- Generate writew lines ---
+        # 1. Load evar (and ivar for time_span if needed)
         self.new_dpatt_str += self.writew_line(
                             channels=dig_chan,
                             time=self.timestep,
                             address={'address' : None,
-                                     'special' : special_load,
+                                     'special' : special_load_cmd,
                                      'cond'    : None,
                                     },
-                            comment='#load vars',
+                            comment="#Load evar (and ivar if used for time)"
                             )
-        count += 1
-        # Time elapse via loop or single ( min 2 just to keep same num of rows)
+
+        # 2. Time elapsing part (using ivar loop or fixed lines)
         if ivar_needed:
-            repeat_icheck_address = self.pattern_row
+            ivar_loop_decrement_target_row = self.pattern_row
+            # 2a. Decrement ivar for time_span
             self.new_dpatt_str += self.writew_line(
                             channels=dig_chan,
-                            time=time_span_loop//2,
+                            time=time_span_loop_line,
                             address={'address' : None,
-                                     'special' : special_dec,
+                                     'special' : special_dec_ivar_cmd,
                                      'cond'    : None,
                                     },
-                            comment='#Decrement internal counter',
+                            comment="#Decrement ivar for time_span"
                             )
+            # 2b. Check ivar for time_span, loop back to decrement
             self.new_dpatt_str += self.writew_line(
                             channels=dig_chan,
-                            time=time_span_loop//2,
-                            address={'address' : repeat_icheck_address,
-                                     'special' : special_icheck,
+                            time=time_span_loop_line,
+                            address={'address' : ivar_loop_decrement_target_row,
+                                     'special' : special_check_ivar_cmd,
                                      'cond'    : None,
                                     },
-                            comment='#Check internal counter',
-                            )
-            count += 2
-        else:
-            self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=time_span-self.timestep,
-                            address={'address' : None,
-                                     'special' : None,
-                                     'cond'    : None,
-                                    },
-                            comment='',
-                            )
-            self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=self.timestep,
-                            address={'address' : None,
-                                     'special' : None,
-                                     'cond'    : None,
-                                    },
-                            comment='',
-                            )
-            count += 2
+                              comment="#Check ivar for time_span, loop if non-zero"
+                              )
 
-        # Check evar
+        else: # Fixed time delay (num_rows = 5, 1 for load, 2 for this delay, 2 for evar check)
+              # This needs to ensure the total time_span is met.
+              # If num_rows is fixed at 5, 2 lines are for this delay.
+            remaining_time_for_delay = time_span - self.timestep # Subtract time for load line
+            delay_line1_time = remaining_time_for_delay // 2
+            delay_line2_time = remaining_time_for_delay - delay_line1_time
+            if delay_line1_time < self.timestep: delay_line1_time = self.timestep # ensure min
+            if delay_line2_time < self.timestep: delay_line2_time = self.timestep # ensure min
+
+            self.new_dpatt_str += self.writew_line(
+                channels=dig_chan,
+                time=delay_line1_time,
+                address={'address' : None,
+                         'special' : None,
+                         'cond'    : None,
+                        },
+                comment="#Time delay part 1"
+            )
+            self.new_dpatt_str += self.writew_line(
+                channels=dig_chan,
+                time=delay_line2_time,
+                address={'address' : None,
+                         'special' : None,
+                         'cond'    : None,
+                        },
+                comment="#Time delay part 2"
+            )
+
+
+        # 3. Check evar: if non-zero (failure condition for trigger), go to failure_row
         self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=self.timestep,
-                            address={'address' : special_echeck_address_failure,
-                                     'special' : special_echeck,
-                                     'cond'    : None,
-                                    },
-                            comment="#Check evar. Go to " + \
-                            f"row {special_echeck_address_failure}" + \
-                            ", if evar is non-zero(failure)",
-                            )
+            channels=dig_chan,
+            time=self.timestep,
+            address={'address' : failure_row,
+                     'special' : special_check_evar_nonzero_cmd,
+                     'cond'    : None,
+                     },
+            comment=f"#Check evar {evar_chan}. If non-zero (fail), goto {failure_row}"
+        )
+
+        # 4. If evar is zero (success condition for trigger), fall through to go to success_row
         self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=self.timestep,
-                            address={'address' : special_echeck_address_success,
-                                     'special' : None,
-                                     'cond'    : None,
-                                    },
-                            comment="#Go to row " + \
-                            f"{special_echeck_address_success}" + \
-                            ", if evar is zero (success)",
-                            )
-        count += 2
-        #print("trigger", count, num_rows)
+            channels=dig_chan,
+            time=self.timestep,
+            address={'address' : success_row,
+                     'special' : None,
+                     'cond'    : None,
+                     }, # Simple goto
+            comment=f"#Evar {evar_chan} is zero (success). Goto {success_row}"
+        )
 
-    def time_write(self, time):
-        return self.w16(num=(time//self.timestep) - 1, hex=False)
+    def time_write(self, time_ns):
+        """
+        Converts a time in nanoseconds to the hardware value (number of timesteps - 1).
 
-    def address_write(self, address = None, special = None, cond = None):
-        if cond is None:
-            if special is None:
-                if address is None:
-                    return self.w16(self.pattern_row+1, last=True) # write the next pattern
-                else:
-                    return self.w16(address, last=True) # write the given address
-            elif (special>>12) == 1:
-                return self.w16(special, last=True) # write the special load/dec command
-            else:
-                return self.w16(special + address, last=True)
-        else:
-            raise NotImplementedError(f"Conditional not implemented yet.")
-            pass
+        Args:
+            time_ns (int): Time in nanoseconds.
 
-    def row_num_write(self, comment = None):
+        Returns:
+            str: Formatted string for the time word in a 'writew' line.
+        """
+        # Hardware time word is (number of clock cycles - 1)
+        # Number of clock cycles = time_ns / self.timestep (duration of one clock cycle in ns)
+        num_timesteps = time_ns // self.timestep
+        hardware_time_value = num_timesteps - 1
+        if hardware_time_value < 0: hardware_time_value = 0 # Cannot be negative
+        return self.w16(num=hardware_time_value, hex=False) # Time is usually decimal
+
+    def address_write(self, address=None, special=None, cond=None):
+        """
+        Formats the address/special command word for a 'writew' line.
+
+        Args:
+            address (int, optional): Target row address for jumps. If None, implies next row.
+            special (int, optional): Special command code (e.g., for ivar/evar ops).
+            cond (any, optional): Conditional jump parameter (currently not implemented).
+
+        Returns:
+            str: Formatted string for the address word.
+
+        Raises:
+            NotImplementedError: If `cond` is used.
+        """
+        if cond is not None:
+            raise NotImplementedError("Conditional jumps ('cond' parameter) not implemented yet.")
+
+        if special is None: # Simple jump or fall-through
+            if address is None: # Fall-through to next pattern row
+                return self.w16(self.pattern_row + 1, last=True)
+            else: # Simple jump to specified address
+                return self.w16(address, last=True)
+        # Special command (bit 12 is often an indicator for special ops)
+        elif (special >> 12) == 1: # Purely special command (e.g. load, dec)
+            # Address field might be implicitly next row or not used by hardware for these.
+            # Assuming these special ops automatically go to next line unless combined with address.
+            # If special ops can also jump, that logic needs to be encoded in 'special' itself.
+            # For now, if it's a pure special op, address field in w16 might be ignored by HW or be 0.
+            # The original code sometimes adds address to special if it's a check_and_branch.
+            # This path is for special ops that DON'T branch (load, dec).
+            return self.w16(special, last=True) # The address part of this w16 might be effectively 0 or next_row.
+        else: # Special command combined with an address (e.g., check and branch)
+            # This assumes 'special' contains the command bits and 'address' is the target.
+            # Hardware expects these combined. Example: ((8 + evar_idx) << 12) + target_addr
+            return self.w16(special | address, last=True) # Combine special op bits with address bits.
+
+    def row_num_write(self, comment=None):
+        """
+        Generates a comment string indicating the current pattern row number and increments it.
+
+        Args:
+            comment (str, optional): Additional comment to append.
+
+        Returns:
+            str: Formatted comment string (e.g., "\t# row 5 # My comment").
+        """
         row_str = f'\t# row {self.pattern_row}'
-        if comment is not None:
-            row_str += f' #{comment}'
+        if comment: # Append provided comment if any
+            # Ensure comment doesn't already start with #
+            clean_comment = comment.lstrip('#').strip()
+            if clean_comment:
+                 row_str += f' # {clean_comment}'
         self.pattern_row += 1
         return row_str
 
-    def find_good_ivar(self, span, max_lines):
-        min_rows = 512
-        for i, val in enumerate(self.ivars):
-            rows = span/self.maxtimestep/(val+1)
-            if rows < min_rows:
-                min_rows = rows
-                good_ivar = i
-            if rows < 2:
-                break
-        if min_rows < max_lines:
-            return good_ivar, min_rows
-        else:
-            warnings.warn(f"No good ivar value to use < {max_lines} rows. " +
-                    f"Using ivar chan {good_ivar} with {min_rows} rows.")
-            return good_ivar, min_rows
+    def find_good_ivar(self, span_ns, max_lines_for_loop):
+        """
+        Finds an available internal variable (ivar) that can cover the given time
+        `span_ns` using at most `max_lines_for_loop` for its decrement/check cycle.
 
-    def dig_chan_write(self, chan):
-        def sum_chan_bits(chan=chan, first=0, last=15):
-            return sum([2**i if i>=first and i<=last else 0 for i in chan])
-        out0 = sum_chan_bits(first = 0, last = 15)
-        out1 = sum_chan_bits(first = 16, last = 31) >> 16
+        Args:
+            span_ns (int): The total time duration in nanoseconds to cover.
+            max_lines_for_loop (int): Maximum number of pattern lines acceptable for the
+                                      ivar's decrement and check operations per full count.
+
+        Returns:
+            tuple: (ivar_index, achieved_min_rows)
+                   - `ivar_index` (int): Index of the best ivar found (0-3).
+                   - `achieved_min_rows` (float): Number of maxtimestep-based rows this ivar would take.
+        """
+        min_achieved_rows = 512
+        best_ivar_idx = 0 # Default to ivar 0
+
+        # self.ivars contains pre-set initial values for ivars from control block
+        for i, ivar_initial_value in enumerate(self.ivars):
+            if ivar_initial_value == 0: continue # Ivar with 0 count is useless
+
+            # How many full maxtimestep cycles can this ivar achieve?
+            # Each ivar count effectively multiplies the time achieved by its loop body.
+            # If loop body (dec+check) takes `max_lines_for_loop` each of `self.maxtimestep`,
+            # total time by one ivar count = `max_lines_for_loop * self.maxtimestep`.
+            # Total time with this ivar = `ivar_initial_value * max_lines_for_loop * self.maxtimestep`.
+            # We want to find `num_maxtimestep_cycles_per_ivar_loop` such that
+            # `ivar_initial_value * num_maxtimestep_cycles_per_ivar_loop * self.maxtimestep >= span_ns`.
+            # So, `num_maxtimestep_cycles_per_ivar_loop >= span_ns / (ivar_initial_value * self.maxtimestep)`.
+            # The number of rows is related to `num_maxtimestep_cycles_per_ivar_loop`.
+            # Original logic: rows = span / self.maxtimestep / (val+1) - this seems to be
+            # calculating how many times the *entire* maxtimestep needs to be repeated by the ivar.
+            # (val+1) is used because ivar counts down to 0. Let's use val as is, since it's an initial value.
+            # This 'rows' is more like "how many maxtimestep units does each ivar count represent".
+
+            # Calculate how many basic maxtimestep units would be needed per count of this ivar
+            # to cover the total span.
+            # Example: span_ns = 2000, maxtimestep=100, ivar_initial_value=5
+            # Effective rows per ivar count = 2000 / 100 / 5 = 4.
+            # This means each of the 5 counts of the ivar needs to achieve 4*maxtimestep.
+            effective_rows_per_ivar_decrement = span_ns / self.maxtimestep / (ivar_initial_value + 1)
+
+            if effective_rows_per_ivar_decrement < min_achieved_rows:
+                min_achieved_rows = effective_rows_per_ivar_decrement
+                best_ivar_idx = i
+            if effective_rows_per_ivar_decrement < max_lines_for_loop: # Found one good enough
+                break # Stop searching
+
+        if min_achieved_rows >= max_lines_for_loop:
+            warnings.warn(f"No ivar found to cover span {span_ns}ns in < {max_lines_for_loop} " +
+                          f"maxtimestep-based rows per ivar cycle. " +
+                          f"Using ivar {best_ivar_idx} which takes approx {min_achieved_rows:.2f} such rows.")
+        return best_ivar_idx, min_achieved_rows
+
+    def dig_chan_write(self, chan_list):
+        """
+        Converts a list of active digital channel numbers into hardware words.
+
+        Args:
+            chan_list (list): List of integer channel numbers to be active.
+
+        Returns:
+            str: Formatted string of 16-bit words for digital channels.
+                 (2 words for 64-bit, 4 words for 128-bit pattern generator).
+        """
+        # Helper to sum bits for a range of channels
+        def sum_chan_bits(channels, first_idx, last_idx):
+            val = 0
+            for ch_num in channels:
+                if first_idx <= ch_num <= last_idx:
+                    val |= (1 << (ch_num - first_idx)) # Bit position relative to start of word
+            return val
+
+        # Word 0: Channels 0-15
+        out0 = sum_chan_bits(chan_list, 0, 15)
+        # Word 1: Channels 16-31
+        out1 = sum_chan_bits(chan_list, 16, 31)
+
         if self.patgen_128bit:
-            out2 = sum_chan_bits(first = 32, last = 47) >> 32
-            out3 = sum_chan_bits(first = 48, last = 63) >> 48
-            return self.w16(out0)+self.w16(out1)+self.w16(out2)+self.w16(out3)
-        return self.w16(out0)+self.w16(out1)
+            # Word 2: Channels 32-47
+            out2 = sum_chan_bits(chan_list, 32, 47)
+            # Word 3: Channels 48-63
+            out3 = sum_chan_bits(chan_list, 48, 63)
+            return self.w16(out0) + self.w16(out1) + self.w16(out2) + self.w16(out3)
+        else: # 64-bit version
+            return self.w16(out0) + self.w16(out1)
 
-    def split_chan_dig_dac(self, channels):
+    def split_chan_dig_dac(self, channels_dict):
         """
         Splits a channels dictionary into digital channel list and DAC settings dictionary.
 
@@ -2345,57 +2524,89 @@ class Translator:
         Returns:
             tuple: (digital_channels_list, dac_settings_dict)
         """
-        return channels['chan'], channels['dac']
+        return channels_dict.get('chan', []), channels_dict.get('dac', {})
 
-    def dac_config_allow(self, dac_chan):
-        dac_write_allowed = True
-        if self.dacconfig == 0: # All static
-            if len(dac_chan)>0:
-                dac_write_allowed = False
-                assert dac_write_allowed, "dacconfig set to static. No write"+ \
-                                          " allowed"
-            else:
-                dac_write_allowed = True
-        elif self.dacconfig == 1: # Single 0, others static
-            for i in dac_chan.keys():
-                if i>0:
-                    dac_write_allowed = False
-                    assert dac_write_allowed, "dacconfig set to single. "+ \
-                                          "Only dac 0 write allowed"
-                elif i==0:
-                    dac_write_allowed = True
-        elif self.dacconfig == 2: # Half 0-3, others static
-            for i in dac_chan.keys():
-                if i>3:
-                    dac_write_allowed = False
-                    assert dac_write_allowed, "dacconfig set to half. "+ \
-                                          "Only dac 0,1,2,3 writes allowed"
-                elif i>=0 and i<4:
-                    dac_write_allowed = True
-        elif self.dacconfig == 4: # All variable
-            for i in dac_chan.keys():
-                if i>7:
-                    dac_write_allowed = False
-                    assert dac_write_allowed, "dacconfig set to full. "+ \
-                                          "Only 0-7 DAC present"
-                elif i>=0 and i<8:
-                    dac_write_allowed = True
-        return dac_write_allowed
+    def dac_config_allow(self, dac_chan_updates):
+        """
+        Checks if the requested DAC channel updates are allowed by the current
+        global DAC configuration (`self.dacconfig`).
 
-    def dac_chan_write(self, dac_chan):
-        assert self.patgen_128bit, "DAC not present in 64bit version"
-        if len(dac_chan)==0:
-            return self.w16(0) + self.w16(0) # Short circuit, 0,0 for dac
-        assert self.dac_config_allow(dac_chan), "DAC channel static in config"
-        first_dac_value = next(iter(dac_chan.values()))
-        assert all(value == first_dac_value for value in dac_chan.values()), \
-                            "Only one unique DAC value can be set per step."
+        Args:
+            dac_chan_updates (dict): DAC channel-value pairs to be written.
 
-        dac_value = first_dac_value
-        dac_mask = 0
-        for i in dac_chan.keys():
-            dac_mask += 1<<i
-        return self.w16(dac_value) + self.w16(dac_mask)
+        Returns:
+            bool: True if allowed, False otherwise (raises AssertionError if not allowed).
+
+        Raises:
+            AssertionError: If a DAC write is attempted that violates `self.dacconfig`.
+        """
+        if not dac_chan_updates: # No DAC updates requested, always allowed.
+            return True
+
+        # dacconfig: 0=static, 1=single (DAC0), 2=half (DAC0-3), 3=full (DAC0-7)
+        # Note: Original code has 4 for full, but dacselect maps 'full' to 3. Assuming 3 is full.
+        # Let's assume self.dacconfig uses the numerical values 0,1,2,3.
+        config_mode = self.dacconfig
+
+        allowed = True
+        for dac_idx in dac_chan_updates.keys():
+            if config_mode == 0: # Static: no dynamic updates allowed
+                allowed = False
+                assert allowed, "DAC write attempted but dacconfig is 'static'."
+                break
+            elif config_mode == 1: # Single: only DAC 0 allowed
+                if dac_idx != 0:
+                    allowed = False
+                    assert allowed, f"DAC write to {dac_idx} attempted but dacconfig is 'single' (only DAC 0 allowed)."
+                    break
+            elif config_mode == 2: # Half: DAC 0-3 allowed
+                if not (0 <= dac_idx <= 3):
+                    allowed = False
+                    assert allowed, f"DAC write to {dac_idx} attempted but dacconfig is 'half' (only DAC 0-3 allowed)."
+                    break
+            elif config_mode == 3: # Full: DAC 0-7 allowed
+                 if not (0 <= dac_idx <= 7):
+                    allowed = False
+                    # This case should ideally not happen if DAC indices are always 0-7.
+                    assert allowed, f"DAC write to {dac_idx} attempted; dacconfig is 'full' but index is out of 0-7 range."
+                    break
+            # If config_mode is unknown, it's an issue.
+        return allowed
+
+    def dac_chan_write(self, dac_chan_updates):
+        """
+        Converts DAC channel updates into hardware words (value and mask).
+        Only applicable for 128-bit pattern generator version.
+
+        Args:
+            dac_chan_updates (dict): DAC channel (int) to value (int) pairs.
+                                     All channels updated in one step must have the same value.
+
+        Returns:
+            str: Formatted string of two 16-bit words (DAC value, DAC mask).
+
+        Raises:
+            AssertionError: If not 128-bit version, if updates violate `dac_config_allow`,
+                            or if multiple DACs are set to different values in one step.
+        """
+        assert self.patgen_128bit, "DAC operations only available in 128-bit pattern generator version."
+        if not dac_chan_updates: # No DAC updates
+            return self.w16(0) + self.w16(0) # DAC Value = 0, DAC Mask = 0
+
+        assert self.dac_config_allow(dac_chan_updates), "DAC update conflicts with global DAC configuration."
+
+        # All DACs updated in a single pattern line must share the same value.
+        first_dac_value = next(iter(dac_chan_updates.values()))
+        assert all(value == first_dac_value for value in dac_chan_updates.values()), \
+            "In a single pattern step, all updated DAC channels must be set to the same value."
+
+        dac_value_word = first_dac_value
+        dac_mask_word = 0
+        for dac_idx in dac_chan_updates.keys():
+            assert 0 <= dac_idx <= 7, f"Invalid DAC channel index: {dac_idx}. Must be 0-7."
+            dac_mask_word |= (1 << dac_idx)
+
+        return self.w16(dac_value_word) + self.w16(dac_mask_word)
 
     def writew_line(self, channels, time, address, comment=None):
         """
