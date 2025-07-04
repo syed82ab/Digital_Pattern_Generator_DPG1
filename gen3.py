@@ -1587,49 +1587,55 @@ class Translator:
             if block_obj.block_type == 'control':
                 continue
             else:
-                self.determine_num_rows(block)
-        # Go through logic and deterimne start address and end address of each
-        # block
-        first = True
-        count = 0
-        for block, block_end, condition in self.logic:
-            block = self.blocks[block]
-            if first:
-                block.first_row = 0
-                count = block.first_row + block.num_rows
-                block.last_row = count - 1
-                first = False
+                self.determine_num_rows(block_obj)
+
+        # Go through main logic and determine start/end addresses of each block
+        first_block_in_logic = True
+        current_row_count = 0
+        for block_start_id, block_end_id, condition in self.logic:
+            start_block = self.blocks[block_start_id]
+
+            if first_block_in_logic:
+                start_block.first_row = 0
+                current_row_count = start_block.first_row + start_block.num_rows
+                start_block.last_row = current_row_count - 1
+                first_block_in_logic = False
                 continue
-            if block.first_row == None: # Need this since 0 is treated as False
-                block.first_row = count
-                count = block.first_row + block.num_rows
-                block.last_row = count - 1
-            if block.last_row == None:
-                count = block.first_row + block.num_rows
-                block.last_row = count - 1
-            block_end = self.blocks[block_end]
-            if block_end.first_row == None:
-                block_end.first_row = count
-                if block_end.block_type == 'loop':
-                    count += 2 # 2 for loop load var and decrement counter
-                    for block_loop, block_loop_end, condition_loop in \
-                    block_end.loop_logic: # assume no nested loop
-                        #print(block_loop, block_loop_end, condition_loop, count)
-                        block_loop = self.blocks[block_loop]
-                        if block_loop.first_row == None:
-                            block_loop.first_row = count
-                            count = block_loop.first_row + block_loop.num_rows
-                            block_loop.last_row = count - 1
-                        if block_loop.last_row == None:
-                            count = block_loop.first_row + block_loop.num_rows
-                            block_loop.last_row = count - 1
-                        #print(block_loop.block_id, block_loop_end, condition_loop, count)
-                if block_end.block_type == 'loop':
-                    count += 2 # 2 for check and zero conndition address
-                    block_end.last_row = count - 1
+
+            # Assign rows for start_block if not already assigned
+            if start_block.first_row is None:
+                start_block.first_row = current_row_count
+                current_row_count += start_block.num_rows
+                start_block.last_row = current_row_count - 1
+            elif start_block.last_row is None: # Should be set if first_row is set
+                 current_row_count = start_block.first_row + start_block.num_rows
+                 start_block.last_row = current_row_count - 1
+
+
+            end_block = self.blocks[block_end_id]
+            if end_block.first_row is None: # If end_block hasn't been placed yet
+                end_block.first_row = current_row_count
+                if end_block.block_type == 'loop':
+                    # Special handling for loops: account for setup rows and rows of nested blocks
+                    current_row_count += 2 # For loop load var and decrement counter
+                    for nested_block_start_id, nested_block_end_id, _ in \
+                    end_block.loop_logic: # assume no nested loop
+                        nested_block = self.blocks[nested_block_start_id]
+                        if nested_block.first_row is None:
+                            nested_block.first_row = current_row_count
+                            current_row_count += nested_block.num_rows
+                            nested_block.last_row = current_row_count - 1
+                        if nested_block.last_row is None:
+                            current_row_count = nested_block.first_row + nested_block.num_rows
+                            nested_block.last_row = current_row_count - 1
+
+                if end_block.block_type == 'loop':
+                    current_row_count += 2 # 2 for check and zero conndition address
+                    end_block.last_row = current_row_count -1
                 else:
-                    count += block_end.num_rows
-                    block_end.last_row = count - 1
+                    current_row_count += end_block.num_rows
+                    end_block.last_row = current_row_count - 1
+
 
     def determine_num_rows(self, block):
         """
@@ -1652,20 +1658,27 @@ class Translator:
             raise AssertionError(f"Unknown block type for row determination: {block.block_type}")
 
     def preprocess_branch(self, block):
-        '''
-            Branching can either use 1 or 2 rows.
-            It depends on the block of the "low" branch.
-            1) Check condition with high address
-            (2) Low address if not the next row 
-        '''
-        low = block.low
-        name = block.block_id
-        for i, l in enumerate(self.logic):
-            if l[0] == name and self.logic[i+1][0] == low:
-                block.num_rows = 1
+        """
+        Calculates `num_rows` for a BranchBlock.
+        A branch uses 1 row if its 'low' branch target is the immediately
+        following block in the main logic; otherwise, it uses 2 rows.
+
+        Args:
+            block (BranchBlock): The branch block to process.
+        """
+        low_target_id = block.low
+        block_id = block.block_id
+        block.num_rows = 2 # Default to 2 rows
+        # Check if the 'low' branch target immediately follows this branch block in the main logic
+        for i, (src, _, _) in enumerate(self.logic):
+            if src == block_id:
+                if i + 1 < len(self.logic):
+                    next_block_in_logic_id = self.logic[i+1][0]
+                    if next_block_in_logic_id == low_target_id:
+                        block.num_rows = 1
+                        break
+                # If it's the last block or next block isn't the low target, it remains 2 rows.
                 break
-            else:
-                block.num_rows = 2
 
     def preprocess_trigger(self, block):
         """
@@ -1718,319 +1731,422 @@ class Translator:
         seq_len = len(block.sequence) - 1
         for j, step in enumerate(block.sequence):
             time = step['time']
-            i = step['use_ivar']
-            ivar = self.ivars[i] if i else None
-            if ivar:
-                rows += 1 # For load
-                if time/self.maxtimestep/ivar/2 <= 1:
-                    rows += 2 # For decrement and check
-                else: # Happens at >85.8 s with max ivar(65535)
-                    rows += 2 + \
-                    ceil(time/self.maxtimestep/ivar)# Additional line gives 43s
-                if j == seq_len:
-                    rows += 1 # Add one more line if loop is last of sequence
+            ivar_idx = step['use_ivar'] # Corrected from 'i' to 'ivar_idx' for clarity
+            ivar_val = self.ivars[ivar_idx] if ivar_idx is not None else None # Use self.ivars from control block
+
+            if ivar_val: # If an ivar is used for this step
+                rows += 1 # For ivar load operation
+                # Calculate how many loop iterations (decrement and check) are needed
+                # Each full loop operation (decrement + check) takes 2 rows.
+                # Effective time per full loop cycle = self.maxtimestep * 2 (approx)
+                # This logic seems to compare total time vs time achievable with ivar looping
+                if time / self.maxtimestep / ivar_val / 2 <= 1: # Heuristic for simpler loop
+                    rows += 2 # For one decrement and one check
+                else: # For longer durations requiring multiple decrement/check cycles per ivar load
+                    # This calculation seems to determine how many "base" timesteps are needed
+                    # within the ivar loop, beyond the initial load, decrement, and check.
+                    rows += 2 + ceil(time / self.maxtimestep / ivar_val) # Additional lines for extended time
+                if j == seq_len: # If this ivar-based step is the last in the sequence
+                    rows += 1 # Add one more line for explicit jump if loop is last
                     block.last_step_is_loop = True
-            elif ceil(time/self.maxtimestep)<1:
-                rows += 1 # For single step
-            else:
-                additional_rows = ceil(time/self.maxtimestep)
-                if additional_rows >4:
-                    warnings.warn(f"This time step uses {additional_rows} " + \
-                            "rows of the pattern. Consider using ivar")
-                rows += additional_rows # For steps without loops.
+            elif ceil(time / self.maxtimestep) < 1: # Single step, fits in one maxtimestep
+                rows += 1 # For a single 'writew' line
+            else: # Step duration exceeds maxtimestep, requires multiple 'writew' lines
+                additional_rows = ceil(time / self.maxtimestep)
+                if additional_rows > 4: # Warning for very long steps
+                    warnings.warn(f"Sequence step in '{block.block_id}' uses {additional_rows} " +
+                                  "rows. Consider using an ivar for better efficiency.")
+                rows += additional_rows
         block.num_rows = rows
 
     def process_logic(self):
-        self.new_dpatt_str += "\nholdaddr; ramprog;\n"
-        self.pattern_row = 0
-        for block_start, block_end, condition in self.logic:
-            start = self.blocks[block_start]
-            end = self.blocks[block_end]
-            if start.written:
-                continue
-            if start.block_type == 'trigger':
-                #print(f"start {start.block_id}, end {end.block_id}, condition" +
-                #f" {condition}")
-                self.process_trigger_logic(start, end, condition)
-            if start.block_type == 'sequence':
-                self.process_seq_logic(start, end)
-            if start.block_type == 'loop':
-                self.process_loop_logic(start, end)
-            if start.block_type == 'branch':
-                self.process_branch_logic(start, end, condition)
+        """
+        Generates the main pattern program string (`self.new_dpatt_str`)
+        by iterating through the `self.logic` flow and calling specific
+        `process_<block_type>_logic` methods for each unwritten block.
+        """
+        self.new_dpatt_str += "\nholdaddr; ramprog;\n" # Commands to prepare for pattern writing
+        self.pattern_row = 0 # Initialize current pattern row number
+        for block_start_id, block_end_id, condition_str in self.logic:
+            start_block = self.blocks[block_start_id]
+            # end_block might not always be a Block object if it's a special target like 'loop_check'
+            # For now, assume block_end_id refers to a key in self.blocks for general cases.
+            # Specific logic handlers (e.g., process_loop_logic) will manage special end targets.
+            end_block = self.blocks.get(block_end_id) # Use .get() for safety, handle None if needed
 
-    def process_branch_logic(self, branch_block, end, condition):
-        count = 0
-        ext_chan = branch_block.external_input
-        dig_chan = {'chan' :branch_block.chan, 'dac': branch_block.dac}
-        timestep = branch_block.timestep
-        comment = ''
-        special_bcheck_address_high = self.blocks[branch_block.high].first_row
-        special_bcheck_address_low = self.blocks[branch_block.low].first_row
-        special_bcheck = ((ext_chan+3)<<12)
+            if start_block.written: # Skip if this block's pattern has already been generated
+                continue
+
+            # Dispatch to specific logic processors based on block type
+            if start_block.block_type == 'trigger':
+                self.process_trigger_logic(start_block, end_block, condition_str)
+            elif start_block.block_type == 'sequence':
+                self.process_seq_logic(start_block, end_block) # end_block is the next block after sequence
+            elif start_block.block_type == 'loop':
+                self.process_loop_logic(start_block, end_block) # end_block is the block after loop finishes
+            elif start_block.block_type == 'branch':
+                self.process_branch_logic(start_block, end_block, condition_str)
+            # No else needed, as unknown block types would fail in BlockFactory or earlier processing
+
+    def process_branch_logic(self, branch_block, end_block_unused, condition_str_unused):
+        """
+        Generates 'writew' lines for a BranchBlock.
+
+        Args:
+            branch_block (BranchBlock): The branch block to process.
+            end_block_unused: Typically the next block in main flow, but branch logic uses internal high/low targets.
+            condition_str_unused: Condition from main logic, not directly used here as branch has its own.
+        """
+        ext_chan_idx = branch_block.external_input # 1-4
+        dig_chan_settings = {'chan': branch_block.chan, 'dac': branch_block.dac}
+        time_for_check = branch_block.timestep if hasattr(branch_block, 'timestep') else self.timestep # Use block's time or default
+        comment = f"Branch on ext input {ext_chan_idx}"
+
+        # Address for 'high' and 'low' outcomes are determined by the target blocks' first_row
+        target_high_block = self.blocks[branch_block.high]
+        target_low_block = self.blocks[branch_block.low]
+        special_bcheck_address_high = target_high_block.first_row
+        special_bcheck_address_low = target_low_block.first_row
+
+        # Special command for branching: ((external_input_index + 3) << 12)
+        # External inputs e1,e2,e3,e4 correspond to indices 0,1,2,3 for this calculation
+        special_bcheck_command = ((ext_chan_idx -1 + 4) << 12) # Adjust index for 0-based
+
+        # Line 1: Check condition, go to 'high' address if input is high
         self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=timestep,
-                address={'address' : special_bcheck_address_high,
-                         'special' : special_bcheck,
-                         'cond'    : None,
+                channels=dig_chan_settings,
+                time=time_for_check,
+                address={'address': special_bcheck_address_high, # Target if condition met (input high)
+                         'special': special_bcheck_command,
+                         'cond': None, # Conditional jump is part of 'special' for branches
                          },
-                comment=comment,
+                comment=comment + f", if high go to {special_bcheck_address_high}",
                 )
-        count +=1
-        if branch_block.num_rows == 2:
+        
+        # Line 2 (optional): Go to 'low' address if input was low (fall-through from previous check)
+        # This line is only needed if the 'low' target isn't the immediately next line naturally.
+        if branch_block.num_rows == 2: # num_rows determined in preprocess_branch
             self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=timestep,
-                address={'address' : special_bcheck_address_low,
-                         'special' : None,
-                         'cond'    : None,
+                channels=dig_chan_settings, # Channels might be off or different for fall-through
+                time=time_for_check, # Or a minimal time
+                address={'address': special_bcheck_address_low, # Explicit jump to low target
+                         'special': None, # No special command, just a goto
+                         'cond': None,
                          },
-                comment=comment,
+                comment=comment + f", if low go to {special_bcheck_address_low}",
                 )
-            count +=1
         branch_block.written = True
-        #print("branch", count, num_rows)
 
-    def process_loop_logic(self, loop_block, loop_end):
-        count = 0
-        self.new_dpatt_str += "\n#" + loop_block.block_id + "  " + \
-                              loop_block.loop_name + "\n"
+    def process_loop_logic(self, loop_block, after_loop_block):
+        """
+        Generates 'writew' lines for a LoopBlock and its contained logic.
 
-        ivar_chan = loop_block.counter_var
-        dig_chan = {'chan': loop_block.loop_set['chan'],
-                    'dac': loop_block.loop_set['dac']}
-        load_timestep = self.timestep
-        timestep = self.timestep
-        comment  =loop_block.loop_set['comments']
+        Args:
+            loop_block (LoopBlock): The loop block to process.
+            after_loop_block (Block): The block to jump to after the loop finishes.
+        """
+        self.new_dpatt_str += f"\n# Loop Block: {loop_block.block_id} ({loop_block.loop_name})\n"
 
-        special_load = (1<<12) + ((2**ivar_chan)<<4)
-        special_dec = (1<<12) + ((2**ivar_chan)<<8)
-        special_icheck = ((12 + ivar_chan)<<12)
-        icheck_row = loop_block.last_row - 1
-        ivar = loop_block.counter_val
+        ivar_idx = loop_block.counter_var # 0-3
+        # ivar_initial_val = loop_block.counter_val # This is loaded by hardware from param_register
+        dig_chan_settings = {'chan': loop_block.loop_set['chan'],
+                             'dac': loop_block.loop_set['dac']}
+        time_for_control_ops = self.timestep # Use global minimum timestep for loop control
+        loop_comment_base = loop_block.loop_set['comments']
 
+        # Special commands for ivar operations
+        # Load: (1<<12) + ((1 << ivar_idx) << 4)
+        # Dec : (1<<12) + ((1 << ivar_idx) << 8)
+        # Check: ((12 + ivar_idx) << 12)
+        special_load_ivar = (1 << 12) | ((1 << ivar_idx) << 4)
+        special_decrement_ivar = (1 << 12) | ((1 << ivar_idx) << 8)
+        special_check_ivar_nonzero = ((12 + ivar_idx) << 12)
+
+        # 1. Load ivar (counter_var with its pre-set value from param_register)
         self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=load_timestep,
-                address={'address' : None,
-                         'special' : special_load,
-                         'cond'    : None,
-                         },
-                comment= f"Load internal counter {ivar_chan} " + comment,
+                channels=dig_chan_settings,
+                time=time_for_control_ops,
+                address={'address': None, # Address is next line
+                         'special': special_load_ivar,
+                         'cond': None},
+                comment=f"Load ivar {ivar_idx}. {loop_comment_base}",
                 )
-        repeat_icheck_address = self.pattern_row
+
+        # Mark the start of the loop body (for looping back if ivar is non-zero)
+        loop_body_start_row = self.pattern_row
+
+        # 2. Decrement ivar
         self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=timestep,
-                address={'address' : None,
-                         'special' : special_dec,
-                         'cond'    : None,
-                         },
-                comment=f"Decrement {ivar_chan}, " + comment,
+                channels=dig_chan_settings,
+                time=time_for_control_ops,
+                address={'address': None, # Address is next line
+                         'special': special_decrement_ivar,
+                         'cond': None},
+                comment=f"Decrement ivar {ivar_idx}. {loop_comment_base}",
                 )
-        count += 2
-        for block_start, block_end, condition in loop_block.loop_logic:
-            start = self.blocks[block_start]
-            if block_end == 'loop_check':
-                end.block_id = 'loop_check'
-                end.loop_check_row = icheck_row
+
+        # Process blocks inside the loop
+        for nested_start_id, nested_end_id, nested_condition in loop_block.loop_logic:
+            nested_start_block = self.blocks[nested_start_id]
+            # nested_end_block needs careful handling:
+            # If nested_end_id is 'loop_check', it means jump to the loop's own check mechanism.
+            # Otherwise, it's a standard block ID.
+            if nested_end_id == 'loop_check':
+                # Create a placeholder or use a specific mechanism for 'loop_check' target
+                # For now, the address for 'loop_check' will be loop_block.last_row - 1 (the check ivar line)
+                # This means process_trigger_logic etc. need to handle end.block_id == 'loop_check'
+                # and use a pre-calculated target row (e.g. end.loop_check_row)
+                class LoopCheckTarget: pass # Dummy class for type checking if needed
+                nested_end_target = LoopCheckTarget()
+                nested_end_target.block_id = 'loop_check'
+                 # The actual target row for "loop_check" is the 'special_check_ivar_nonzero' line
+                nested_end_target.loop_check_row = loop_block.last_row -1 # loop_block.num_rows = 4, so this is 3rd row from its start
             else:
-                end = self.blocks[block_end]
-            if start.written:
-                continue
-            if start.block_type == 'trigger':
-                #print(f"start {start.block_id}, end {end.block_id}, condition" +
-                #f" {condition}")
-                self.process_trigger_logic(start, end, condition)
-            if start.block_type == 'sequence':
-                self.process_seq_logic(start, end)
+                nested_end_target = self.blocks[nested_end_id]
 
-        self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=timestep,
-                address={'address' : repeat_icheck_address,
-                         'special' : special_icheck,
-                         'cond'    : None,
-                         },
-                comment=f"#Check {ivar_chan}. Go to " + \
-                       f"row {repeat_icheck_address}" + \
-                        ", if ivar is non-zero" + comment,
-                )
-        address = loop_end.first_row
-        self.new_dpatt_str += self.writew_line(
-                channels=dig_chan,
-                time=timestep,
-                address={'address' : address,
-                         'special' : None,
-                         'cond'    : None,
-                         },
-                comment=f"Go to row {address}, if ivar is zero." + comment,
-                )
-        count += 2
-        #print("loop", count, loop_block.num_rows)
 
-    def process_seq_logic(self, start, end):
-        count = 0
-        seq_len = len(start.sequence) - 1
-        self.new_dpatt_str += "\n#" + start.block_id + "  " + \
-                              start.sequence_name + "\n"
-        for j, step in enumerate(start.sequence):
-            time = step['time']
-            ivar_chan = step['use_ivar']
-            dig_chan = {'chan': step['chan'], 'dac': step['dac']}
-            comment = step['comments']
-            ivar = self.ivars[ivar_chan] if ivar_chan else None
-            if ivar:
-                if start.last_step_is_loop and j == seq_len:
-                    time = time - self.timestep # reserve 1 timestep to point
-                                                 # to next address if last loop
-                                                 # in sequence block
-                special_load = (1<<12) + ((2**ivar_chan)<<4)
-                special_dec = (1<<12) + ((2**ivar_chan)<<8)
-                special_icheck = ((12 + ivar_chan)<<12)
+            if nested_start_block.written: continue
+
+            if nested_start_block.block_type == 'trigger':
+                self.process_trigger_logic(nested_start_block, nested_end_target, nested_condition)
+            elif nested_start_block.block_type == 'sequence':
+                self.process_seq_logic(nested_start_block, nested_end_target)
+            elif nested_start_block.block_type == 'branch':
+                 self.process_branch_logic(nested_start_block, nested_end_target, nested_condition)
+            # Note: Loops inside loops are not explicitly handled here by recursing process_loop_logic.
+            # The general block layout in preprocess_blocks should allocate space if declared.
+            # However, generating nested loop control logic might need more specific handling.
+
+        # 3. Check ivar: if non-zero, jump to loop_body_start_row
+        self.new_dpatt_str += self.writew_line(
+                channels=dig_chan_settings,
+                time=time_for_control_ops,
+                address={'address': loop_body_start_row, # Jump here if ivar non-zero
+                         'special': special_check_ivar_nonzero,
+                         'cond': None},
+                comment=f"Check ivar {ivar_idx}. If non-zero, goto row {loop_body_start_row}. {loop_comment_base}",
+                )
+
+        # 4. If ivar is zero (fall-through), jump to the block after the loop
+        after_loop_target_row = after_loop_block.first_row if after_loop_block else self.pattern_row + 1 # Fall to next or specific target
+        self.new_dpatt_str += self.writew_line(
+                channels=dig_chan_settings,
+                time=time_for_control_ops,
+                address={'address': after_loop_target_row,
+                         'special': None, # Simple goto
+                         'cond': None},
+                comment=f"Ivar {ivar_idx} is zero. Goto row {after_loop_target_row}. {loop_comment_base}",
+                )
+        loop_block.written = True
+
+
+    def process_seq_logic(self, seq_block, next_block_after_seq):
+        """
+        Generates 'writew' lines for a SeqBlock.
+
+        Args:
+            seq_block (SeqBlock): The sequence block to process.
+            next_block_after_seq (Block): The block to jump to after the sequence completes.
+        """
+        num_steps_in_seq = len(seq_block.sequence)
+        self.new_dpatt_str += f"\n# Sequence Block: {seq_block.block_id} ({seq_block.sequence_name})\n"
+
+        for i, step in enumerate(seq_block.sequence):
+            time_ns = step['time']
+            ivar_idx = step['use_ivar'] # 0-3 or None
+            dig_chan_settings = {'chan': step['chan'], 'dac': step['dac']}
+            step_comment = step['comments']
+            # ivar_val is the pre-loaded value in hardware for that ivar_idx
+            ivar_val = self.ivars[ivar_idx] if ivar_idx is not None else None
+
+            is_last_step = (i == num_steps_in_seq - 1)
+
+            if ivar_val: # Step uses an internal variable for timing/looping
+                actual_time_ns = time_ns
+                # If it's the last step of the sequence AND it's an ivar loop,
+                # one timestep might be reserved for the final jump out of the sequence.
+                if seq_block.last_step_is_loop and is_last_step:
+                    actual_time_ns = time_ns - self.timestep
+
+                # Special commands for ivar operations (same as in loop_block)
+                special_load_ivar = (1 << 12) | ((1 << ivar_idx) << 4)
+                special_decrement_ivar = (1 << 12) | ((1 << ivar_idx) << 8)
+                special_check_ivar_nonzero = ((12 + ivar_idx) << 12)
+
+                verbose_comment = ""
                 if self.verbose:
-                    load_comment = f"Load internal counter {ivar_chan} "
-                    dec_comment = "Decrease ivar by 1"
-                    check_comment = "Check ivar"
-                else:
-                    load_comment = ""
-                    dec_comment = ""
-                    check_comment = ""
-                if time/self.maxtimestep/ivar/2 <= 1:
-                    time_loop, load_timestep= self.timebalancer(time, ivar, 2)
-                    #print(time,ivar,time_loop,load_timestep)
+                    verbose_comment = f" (ivar {ivar_idx})"
+
+                # Determine loop structure based on time and ivar capability
+                # This logic is complex and aims to balance load/decrement/check operations.
+                # Simplified: if time can be achieved with one load and a few dec/checks vs many.
+                # The `timebalancer` method calculates optimal `time_per_loop_line` and `load_line_time`.
+                if actual_time_ns / self.maxtimestep / ivar_val / 2 <= 1: # Simpler loop structure
+                    num_loop_lines_for_timing = 2 # dec, check
+                    time_per_loop_line, load_line_time = self.timebalancer(actual_time_ns, ivar_val, num_loop_lines_for_timing)
+
+                    # 1. Load ivar
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=load_timestep,
+                        channels=dig_chan_settings,
+                        time=load_line_time,
                         address={'address' : None,
-                                 'special' : special_load,
+                                 'special' : special_load_ivar,
                                  'cond'    : None,
                                 },
-                        comment= load_comment + comment,
+                        comment=f"Load ivar{verbose_comment}. {step_comment}"
                         )
-                    repeat_icheck_address = self.pattern_row
+                    
+                    loop_dec_target_row = self.pattern_row
+                    # 2. Decrement ivar
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=time_loop,
+                        channels=dig_chan_settings,
+                        time=time_per_loop_line,
                         address={'address' : None,
-                                 'special' : special_dec,
+                                 'special' : special_decrement_ivar,
                                  'cond'    : None,
                                 },
-                        comment= dec_comment + comment,
+                        comment=f"Decrement ivar{verbose_comment}. {step_comment}"
                         )
+                    
+                    # 3. Check ivar (non-zero implies loop back to decrement)
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=time_loop,
-                        address={'address' : repeat_icheck_address,
-                                 'special' : special_icheck,
+                        channels=dig_chan_settings,
+                        time=time_per_loop_line,
+                        address={'address' : loop_dec_target_row,
+                                 'special' : special_check_ivar_nonzero,
                                  'cond'    : None,
                                 },
-                        comment=check_comment + comment,
+                        comment=f"Check ivar{verbose_comment}, loop to {loop_dec_target_row}. {step_comment}"
                         )
-                    count += 3 # For load, decrement and check
-                else: # Happens at >84.8 s with max ivar(65535)
-                    lines = ceil(time/self.maxtimestep/ivar)
-                    time_loop, load_timestep= self.timebalancer(time, ivar,
-                            lines)
+                else: # More complex loop for very long times
+                    num_loop_lines_for_timing = ceil(actual_time_ns / self.maxtimestep / ivar_val)
+                    time_per_loop_line, load_line_time = self.timebalancer(actual_time_ns, ivar_val, num_loop_lines_for_timing)
+
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=load_timestep,
+                        channels=dig_chan_settings,
+                        time=load_line_time,
                         address={'address' : None,
-                                 'special' : special_load,
+                                 'special' : special_load_ivar,
                                  'cond'    : None,
                                 },
-                        comment=load_comment + comment,
+                        comment=f"Load ivar{verbose_comment} (long). {step_comment}"
                         )
-                    repeat_icheck_address = self.pattern_row
+
+                    loop_dec_target_row = self.pattern_row
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=time_loop,
+                        channels=dig_chan_settings,
+                        time=time_per_loop_line,
                         address={'address' : None,
-                                 'special' : special_dec,
+                                 'special' : special_decrement_ivar,
                                  'cond'    : None,
                                 },
-                        comment=dec_comment + comment,
+                        comment=f"Decrement ivar{verbose_comment} (long). {step_comment}"
                         )
-                    count += 2
-                    for ii in range(lines-2): # minus decrement and check
+                    
+                    for _ in range(num_loop_lines_for_timing - 2): # Additional lines for timing
                         self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=time_loop,
+                            channels=dig_chan_settings,
+                            time=time_per_loop_line,
                             address={'address' : None,
                                      'special' : None,
                                      'cond'    : None,
                                     },
-                            comment=comment,
+                            comment=f"Timing line for ivar{verbose_comment}. {step_comment}"
                             )
-                        count += 1
+
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=time_loop,
-                        address={'address' : repeat_icheck_address,
-                                 'special' : special_icheck,
+                        channels=dig_chan_settings,
+                        time=time_per_loop_line,
+                        address={'address' : loop_dec_target_row,
+                                 'special' : special_check_ivar_nonzero,
                                  'cond'    : None,
                                 },
-                        comment=check_comment + comment,
+                        comment=f"Check ivar{verbose_comment} (long), loop to {loop_dec_target_row}. {step_comment}"
                         )
-                    count += 1
-                if start.last_step_is_loop and j == seq_len: # if last loop
+
+                # If this ivar-based step is the last in the sequence, add explicit jump
+                if seq_block.last_step_is_loop and is_last_step:
+                    target_address = next_block_after_seq.first_row if next_block_after_seq else self.pattern_row + 1
                     self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=self.timestep,
-                        address={'address' : end.first_row,
+                        channels=dig_chan_settings,
+                        time=self.timestep, # Minimal time for jump
+                        address={'address' : target_address,
                                  'special' : None,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment=f"End of ivar step, to {target_address}. {step_comment}"
                         )
-                    count += 1
-            elif ceil(time/self.maxtimestep)<1:
-                address = end.first_row if j == seq_len else None
-                self.new_dpatt_str += self.writew_line(
-                        channels=dig_chan,
-                        time=time,
-                        address={'address' : address,
+
+            else: # Step does not use an ivar, simple time delay
+                if ceil(time_ns / self.maxtimestep) < 1: # Fits in one pattern line
+                    target_address = next_block_after_seq.first_row if is_last_step and next_block_after_seq else None
+                    self.new_dpatt_str += self.writew_line(
+                        channels=dig_chan_settings,
+                        time=time_ns,
+                        address={'address': target_address,                                 'special' : None,
                                  'special' : None,
                                  'cond'    : None,
                                 },
-                        comment=comment,
+                        comment=step_comment
                         )
-                count += 1
-            else:
-                additional_rows = ceil(time/self.maxtimestep)
-                if additional_rows >4:
-                    warnings.warn(f"This time step uses {additional_rows} " + \
-                            "rows of the pattern. Consider using ivar")
-                time_left = time
-                while time_left > 0:
-                    if time_left > self.maxtimestep:
-                        address = None
-                        time_to_write = self.maxtimestep
-                        time_left -= time_to_write
-                    else:
-                        address = end.first_row if j == seq_len else None
-                        time_to_write = time_left
-                        time_left -= time_to_write
-                    self.new_dpatt_str += self.writew_line(
-                            channels=dig_chan,
-                            time=int(time_to_write),
-                            address={'address' : address,
+
+                else: # Requires multiple pattern lines
+                    remaining_time_ns = time_ns
+                    while remaining_time_ns > 0:
+                        current_line_time = min(remaining_time_ns, self.maxtimestep)
+                        remaining_time_ns -= current_line_time
+                        is_final_part_of_step = (remaining_time_ns == 0)
+                        target_address = next_block_after_seq.first_row if is_last_step and is_final_part_of_step and next_block_after_seq else None
+
+                        self.new_dpatt_str += self.writew_line(
+                            channels=dig_chan_settings,
+                            time=int(current_line_time),
+                            address={'address': target_address,
                                      'special' : None,
                                      'cond'    : None,
                                     },
-                            comment=comment,
-                            )
-                    count += 1
-        #print("sequence", count, start.num_rows)
+                            comment=step_comment)
+                        # count +=1
+        seq_block.written = True
 
-    def timebalancer(self, time, i, looplines = 2):
-        timestep = self.timestep
-        load_timestep = timestep
-        while ((time - load_timestep)/i/timestep%looplines):
-            load_timestep += timestep
-        time_loop = int((time - load_timestep)/i//looplines)
-        return time_loop, load_timestep
+    def timebalancer(self, time, ivar_value, looplines=2):
+        """
+        Balances time distribution between the initial 'load ivar' line
+        and subsequent looping lines for timed sequences using ivars.
+
+        The goal is to make `(time - load_timestep) / ivar_value / timestep`
+        evenly divisible by `looplines` (number of pattern lines per ivar decrement cycle).
+
+        Args:
+            time (int): Total desired time in ns for the ivar-controlled segment.
+            ivar_value (int): The value of the ivar (number of loops).
+            looplines (int): Number of pattern lines used per single decrement of the ivar
+                             (e.g., 2 for a decrement line and a check line).
+
+        Returns:
+            tuple: (time_per_loop_iteration_ns, load_instruction_time_ns)
+                   - `time_per_loop_iteration_ns`: Time allocated to each of the `looplines`
+                                                   within one ivar decrement cycle.
+                   - `load_instruction_time_ns`: Time allocated to the initial 'load ivar' instruction.
+        """
+        base_timestep = self.timestep # Minimum hardware timestep
+        load_instr_time = base_timestep # Start with minimum time for load instruction
+
+        # Increment time for the load instruction until the remaining time is perfectly
+        # divisible by (ivar_value * base_timestep * looplines)
+        # This ensures that (time - load_instr_time) / ivar_value can be split evenly
+        # across 'looplines', each taking 'time_per_loop_iteration_ns'.
+        while ((time - load_instr_time) / ivar_value / base_timestep % looplines != 0):
+            load_instr_time += base_timestep
+            if load_instr_time > time : # Safety break, should not happen with valid inputs
+                 raise ValueError("Time balancing failed: load_instr_time exceeded total time.")
+
+        # Time remaining after the load instruction, per single ivar count
+        time_per_ivar_count_after_load = (time - load_instr_time) / ivar_value
+        # Time for each line within the actual looping part (e.g. for dec, for check)
+        time_per_loop_line = int(time_per_ivar_count_after_load // looplines)
+
+        return time_per_loop_line, load_instr_time
 
 
     def process_trigger_logic(self, start, end, condition):
