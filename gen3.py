@@ -66,7 +66,7 @@ LOGIC_PATTERN = re.compile(r'^(\w+)\s*-->\s*(\|\w+\|)?\s*(\w+)$')
 class MermaidParser:
     """
     Parses a Mermaid-like syntax file defining digital pattern generator blocks and their logical connections.
-    
+
     Args:
         file_path (str): Path to the Mermaid-like input file.
 
@@ -1823,7 +1823,7 @@ class Translator:
                          },
                 comment=comment + f", if high go to {special_bcheck_address_high}",
                 )
-        
+
         # Line 2 (optional): Go to 'low' address if input was low (fall-through from previous check)
         # This line is only needed if the 'low' target isn't the immediately next line naturally.
         if branch_block.num_rows == 2: # num_rows determined in preprocess_branch
@@ -1996,7 +1996,7 @@ class Translator:
                                 },
                         comment=f"Load ivar{verbose_comment}. {step_comment}"
                         )
-                    
+
                     loop_dec_target_row = self.pattern_row
                     # 2. Decrement ivar
                     self.new_dpatt_str += self.writew_line(
@@ -2008,7 +2008,7 @@ class Translator:
                                 },
                         comment=f"Decrement ivar{verbose_comment}. {step_comment}"
                         )
-                    
+
                     # 3. Check ivar (non-zero implies loop back to decrement)
                     self.new_dpatt_str += self.writew_line(
                         channels=dig_chan_settings,
@@ -2043,7 +2043,7 @@ class Translator:
                                 },
                         comment=f"Decrement ivar{verbose_comment} (long). {step_comment}"
                         )
-                    
+
                     for _ in range(num_loop_lines_for_timing - 2): # Additional lines for timing
                         self.new_dpatt_str += self.writew_line(
                             channels=dig_chan_settings,
@@ -2084,7 +2084,7 @@ class Translator:
                     self.new_dpatt_str += self.writew_line(
                         channels=dig_chan_settings,
                         time=time_ns,
-                        address={'address': target_address,                                 'special' : None,
+                        address={'address': target_address,
                                  'special' : None,
                                  'cond'    : None,
                                 },
@@ -2164,6 +2164,10 @@ class Translator:
         """
         ivar_needed_for_timespan = False
         ivar_chan_for_timespan = None
+
+        assert trigger_block.count == \
+                self.evars[trigger_block.external_input -1], \
+                "Count in trigger block doesn't match evars in control block"
 
         # Determine actual success and failure target blocks based on the incoming condition
         # The condition_str refers to how we *entered* this trigger block,
